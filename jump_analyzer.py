@@ -44,18 +44,18 @@ def convert_keypoints_to_dict(keypoints_2d, keypoints_3d):
                 "2d": {
                     "x": float(kp_2d[0]) if kp_2d[0] is not None else None,
                     "y": float(kp_2d[1]) if kp_2d[1] is not None else None,
-                    "confidence": float(kp_2d[2])
+                    "confidence": float(kp_2d[2]),
                 },
                 "3d": {
                     "x": float(kp_3d[0]) if kp_3d and kp_3d[0] is not None else None,
                     "y": float(kp_3d[1]) if kp_3d and kp_3d[1] is not None else None,
-                    "z": float(kp_3d[2]) if kp_3d and kp_3d[2] is not None else None
-                }
+                    "z": float(kp_3d[2]) if kp_3d and kp_3d[2] is not None else None,
+                },
             }
         else:
             result[keypoint_name] = {
                 "2d": {"x": None, "y": None, "confidence": 0.0},
-                "3d": {"x": None, "y": None, "z": None}
+                "3d": {"x": None, "y": None, "z": None},
             }
 
     return result
@@ -63,7 +63,7 @@ def convert_keypoints_to_dict(keypoints_2d, keypoints_3d):
 
 def save_json(data, output_path):
     """JSONファイルに保存"""
-    with open(output_path, 'w', encoding='utf-8') as f:
+    with open(output_path, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
     print(f"JSON saved to: {output_path}")
 
@@ -71,59 +71,72 @@ def save_json(data, output_path):
 def save_csv(statistics, trajectory, output_path):
     """CSVファイルに保存"""
     # 統計情報をCSVに保存
-    stats_path = output_path.replace('.csv', '_statistics.csv')
-    with open(stats_path, 'w', newline='', encoding='utf-8') as f:
+    stats_path = output_path.replace(".csv", "_statistics.csv")
+    with open(stats_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
-        writer.writerow(['Metric', 'Value'])
-        writer.writerow(['Total Jumps', statistics.get('total_jumps', 0)])
-        writer.writerow(['Vertical Jumps', statistics.get('vertical_jumps', 0)])
-        writer.writerow(['Horizontal Jumps', statistics.get('horizontal_jumps', 0)])
-        writer.writerow(['Max Height (cm)', statistics.get('max_height', 0) * 100])
-        writer.writerow(['Max Distance (cm)', statistics.get('max_distance', 0) * 100])
-        writer.writerow(['Avg Height (cm)', statistics.get('avg_height', 0) * 100])
-        writer.writerow(['Avg Distance (cm)', statistics.get('avg_distance', 0) * 100])
+        writer.writerow(["Metric", "Value"])
+        writer.writerow(["Total Jumps", statistics.get("total_jumps", 0)])
+        writer.writerow(["Vertical Jumps", statistics.get("vertical_jumps", 0)])
+        writer.writerow(["Horizontal Jumps", statistics.get("horizontal_jumps", 0)])
+        writer.writerow(["Max Height (cm)", statistics.get("max_height", 0) * 100])
+        writer.writerow(["Max Distance (cm)", statistics.get("max_distance", 0) * 100])
+        writer.writerow(["Avg Height (cm)", statistics.get("avg_height", 0) * 100])
+        writer.writerow(["Avg Distance (cm)", statistics.get("avg_distance", 0) * 100])
     print(f"Statistics CSV saved to: {stats_path}")
 
     # ジャンプ詳細をCSVに保存
-    if statistics.get('jumps'):
-        jumps_path = output_path.replace('.csv', '_jumps.csv')
-        with open(jumps_path, 'w', newline='', encoding='utf-8') as f:
+    if statistics.get("jumps"):
+        jumps_path = output_path.replace(".csv", "_jumps.csv")
+        with open(jumps_path, "w", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
-            writer.writerow(['Jump #', 'Type', 'Height (cm)', 'Distance (cm)',
-                           'Start Frame', 'End Frame', 'Duration (frames)'])
-            for i, jump in enumerate(statistics['jumps'], 1):
-                writer.writerow([
-                    i,
-                    jump['jump_type'],
-                    jump['height'] * 100,
-                    jump['distance'] * 100,
-                    jump['frame_start'],
-                    jump['frame_end'],
-                    jump['frame_end'] - jump['frame_start']
-                ])
+            writer.writerow(
+                [
+                    "Jump #",
+                    "Type",
+                    "Height (cm)",
+                    "Distance (cm)",
+                    "Start Frame",
+                    "End Frame",
+                    "Duration (frames)",
+                ]
+            )
+            for i, jump in enumerate(statistics["jumps"], 1):
+                writer.writerow(
+                    [
+                        i,
+                        jump["jump_type"],
+                        jump["height"] * 100,
+                        jump["distance"] * 100,
+                        jump["frame_start"],
+                        jump["frame_end"],
+                        jump["frame_end"] - jump["frame_start"],
+                    ]
+                )
         print(f"Jumps CSV saved to: {jumps_path}")
 
     # 軌跡データをCSVに保存
     if trajectory:
-        trajectory_path = output_path.replace('.csv', '_trajectory.csv')
-        with open(trajectory_path, 'w', newline='', encoding='utf-8') as f:
+        trajectory_path = output_path.replace(".csv", "_trajectory.csv")
+        with open(trajectory_path, "w", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
-            writer.writerow(['Frame', 'Timestamp', 'X (m)', 'Y (m)', 'Z (m)'])
+            writer.writerow(["Frame", "Timestamp", "X (m)", "Y (m)", "Z (m)"])
             for point in trajectory:
-                pos = point.get('position', (None, None, None))
-                writer.writerow([
-                    point.get('frame', ''),
-                    point.get('timestamp', ''),
-                    pos[0] if pos[0] is not None else '',
-                    pos[1] if pos[1] is not None else '',
-                    pos[2] if pos[2] is not None else ''
-                ])
+                pos = point.get("position", (None, None, None))
+                writer.writerow(
+                    [
+                        point.get("frame", ""),
+                        point.get("timestamp", ""),
+                        pos[0] if pos[0] is not None else "",
+                        pos[1] if pos[1] is not None else "",
+                        pos[2] if pos[2] is not None else "",
+                    ]
+                )
         print(f"Trajectory CSV saved to: {trajectory_path}")
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Jump Analyzer: Analyze jump height, distance, and trajectory from RealSense .bag file',
+        description="Jump Analyzer: Analyze jump height, distance, and trajectory from RealSense .bag file",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -135,34 +148,62 @@ Examples:
 
   # Adjust jump detection thresholds
   python jump_analyzer.py --input bagdata/my_recording.bag --output results/ --threshold-vertical 0.1 --threshold-horizontal 0.2
-        """
+        """,
     )
 
     # 必須引数
-    parser.add_argument('--input', type=str, required=True,
-                       help='Input .bag file path')
-    parser.add_argument('--output', type=str, required=True,
-                       help='Output directory for results')
+    parser.add_argument("--input", type=str, required=True, help="Input .bag file path")
+    parser.add_argument(
+        "--output", type=str, required=True, help="Output directory for results"
+    )
 
     # オプション引数
-    parser.add_argument('--model-dir', type=str, default='models',
-                       help='Directory for YOLOv8-Pose model files (default: models)')
-    parser.add_argument('--model-name', type=str, default='yolov8n-pose.pt',
-                       help='YOLOv8-Pose model name (yolov8n-pose.pt, yolov8s-pose.pt, etc.) (default: yolov8n-pose.pt)')
-    parser.add_argument('--threshold-vertical', type=float, default=0.05,
-                       help='Vertical jump detection threshold in meters (default: 0.05)')
-    parser.add_argument('--threshold-horizontal', type=float, default=0.1,
-                       help='Horizontal jump detection threshold in meters (default: 0.1)')
-    parser.add_argument('--no-video', action='store_true',
-                       help='Skip video visualization output')
+    parser.add_argument(
+        "--model-dir",
+        type=str,
+        default="models",
+        help="Directory for YOLOv8-Pose model files (default: models)",
+    )
+    parser.add_argument(
+        "--model-name",
+        type=str,
+        default="yolov8n-pose.pt",
+        help="YOLOv8-Pose model name (yolov8n-pose.pt, yolov8s-pose.pt, etc.) (default: yolov8n-pose.pt)",
+    )
+    parser.add_argument(
+        "--threshold-vertical",
+        type=float,
+        default=0.05,
+        help="Vertical jump detection threshold in meters (default: 0.05)",
+    )
+    parser.add_argument(
+        "--threshold-horizontal",
+        type=float,
+        default=0.1,
+        help="Horizontal jump detection threshold in meters (default: 0.1)",
+    )
+    parser.add_argument(
+        "--no-video", action="store_true", help="Skip video visualization output"
+    )
 
     # 高速化オプション
-    parser.add_argument('--frame-skip', type=int, default=1,
-                       help='Process every N frames (1=all frames, 2=every other frame, etc.) (default: 1)')
-    parser.add_argument('--resize-factor', type=float, default=1.0,
-                       help='Resize image before YOLOv8-Pose inference (1.0=no resize, 0.5=half size) (default: 1.0)')
-    parser.add_argument('--minimal-data', action='store_true',
-                       help='Save only jump detection frames in JSON (faster, smaller file)')
+    parser.add_argument(
+        "--frame-skip",
+        type=int,
+        default=1,
+        help="Process every N frames (1=all frames, 2=every other frame, etc.) (default: 1)",
+    )
+    parser.add_argument(
+        "--resize-factor",
+        type=float,
+        default=1.0,
+        help="Resize image before YOLOv8-Pose inference (1.0=no resize, 0.5=half size) (default: 1.0)",
+    )
+    parser.add_argument(
+        "--minimal-data",
+        action="store_true",
+        help="Save only jump detection frames in JSON (faster, smaller file)",
+    )
 
     args = parser.parse_args()
 
@@ -199,7 +240,7 @@ Examples:
     # ジャンプ検出器の初期化
     jump_detector = JumpDetector(
         threshold_vertical=args.threshold_vertical,
-        threshold_horizontal=args.threshold_horizontal
+        threshold_horizontal=args.threshold_horizontal,
     )
 
     # 可視化器の初期化
@@ -207,7 +248,11 @@ Examples:
 
     # データ保存用のリスト
     all_frames_data = []
-    visualization_frames = []
+
+    # 可視化動画ライター（メモリ効率化のため逐次書き込み）
+    video_writer = None
+    video_path = None
+    video_fps = 30
 
     print("\nProcessing frames...")
     if args.frame_skip > 1:
@@ -234,7 +279,9 @@ Examples:
             if color_frame is None or depth_frame is None:
                 break
 
-            color_image, depth_image = bag_reader.frame_to_numpy(color_frame, depth_frame)
+            color_image, depth_image = bag_reader.frame_to_numpy(
+                color_frame, depth_frame
+            )
 
             if color_image is None or depth_image is None:
                 continue
@@ -275,7 +322,9 @@ Examples:
                 scaled_keypoints_2d = []
                 for kp in keypoints_2d:
                     if kp[0] is not None and kp[1] is not None:
-                        scaled_keypoints_2d.append((kp[0] * resize_scale_x, kp[1] * resize_scale_y, kp[2]))
+                        scaled_keypoints_2d.append(
+                            (kp[0] * resize_scale_x, kp[1] * resize_scale_y, kp[2])
+                        )
                     else:
                         scaled_keypoints_2d.append(kp)
                 keypoints_2d = scaled_keypoints_2d
@@ -289,7 +338,9 @@ Examples:
             for i, (kp_name, kp_2d) in enumerate(zip(COCO_KEYPOINTS, keypoints_2d)):
                 if kp_2d[0] is not None and kp_2d[1] is not None:
                     # 深度値を取得
-                    depth = bag_reader.get_depth_at_point(depth_frame, kp_2d[0], kp_2d[1])
+                    depth = bag_reader.get_depth_at_point(
+                        depth_frame, kp_2d[0], kp_2d[1]
+                    )
 
                     if depth is not None:
                         # 3D座標に変換
@@ -304,26 +355,34 @@ Examples:
             # 最初の数フレームで時間を表示
             if processed_frame_count <= 5:
                 total_time = pose_time + depth_time
-                print(f"Frame {processed_frame_count}: "
-                      f"Pose={pose_time:.3f}s ({pose_time/total_time*100:.1f}%), "
-                      f"3D={depth_time:.3f}s ({depth_time/total_time*100:.1f}%)")
+                print(
+                    f"Frame {processed_frame_count}: "
+                    f"Pose={pose_time:.3f}s ({pose_time/total_time*100:.1f}%), "
+                    f"3D={depth_time:.3f}s ({depth_time/total_time*100:.1f}%)"
+                )
 
             # ジャンプ検出
             timestamp = color_frame.get_timestamp()
             # frame_numではなくprocessed_frame_countを使用（スキップ考慮）
-            jump_result = jump_detector.update(processed_frame_count, keypoints_3d, timestamp)
+            jump_result = jump_detector.update(
+                processed_frame_count, keypoints_3d, timestamp
+            )
 
             # フレームデータを保存（minimal_dataモードではジャンプ検出時のみ）
             should_save = True
             if args.minimal_data:
-                should_save = jump_result is not None and jump_result.get("state") in ["jump_start", "jump_end", "jumping"]
+                should_save = jump_result is not None and jump_result.get("state") in [
+                    "jump_start",
+                    "jump_end",
+                    "jumping",
+                ]
 
             if should_save:
                 frame_data = {
                     "frame": frame_num,
                     "processed_frame": processed_frame_count,
                     "timestamp": timestamp,
-                    "keypoints": convert_keypoints_to_dict(keypoints_2d, keypoints_3d)
+                    "keypoints": convert_keypoints_to_dict(keypoints_2d, keypoints_3d),
                 }
 
                 if jump_result:
@@ -333,39 +392,65 @@ Examples:
                         "position": jump_result.get("position"),
                         "jump_type": jump_result.get("jump_type"),
                         "jump_height": jump_result.get("jump_height"),
-                        "jump_distance": jump_result.get("jump_distance")
+                        "jump_distance": jump_result.get("jump_distance"),
                     }
 
                 all_frames_data.append(frame_data)
 
-            # 可視化フレームを生成
+            # 可視化フレームを生成（逐次書き込みでメモリ効率化）
             if not args.no_video:
                 # スケルトンを描画
-                skeleton_image = yolo_pose.draw_skeleton(color_image.copy(), keypoints_2d)
+                skeleton_image = yolo_pose.draw_skeleton(
+                    color_image.copy(), keypoints_2d
+                )
 
                 # 統計情報を取得
                 statistics = jump_detector.get_statistics()
 
                 # 可視化フレームを生成
-                vis_frame = visualizer.draw_frame(skeleton_image, keypoints_2d, jump_result, statistics)
-                visualization_frames.append(vis_frame)
+                vis_frame = visualizer.draw_frame(
+                    skeleton_image, keypoints_2d, jump_result, statistics
+                )
+
+                # 動画ライターを初期化（最初のフレーム時のみ）
+                if video_writer is None:
+                    video_path = output_dir / "jump_visualization.mp4"
+                    height, width = vis_frame.shape[:2]
+                    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+                    video_writer = cv2.VideoWriter(
+                        str(video_path), fourcc, video_fps, (width, height)
+                    )
+                    print(f"Initialized video writer: {video_path}")
+
+                # フレームを即座に書き込み（メモリに保持しない）
+                video_writer.write(vis_frame)
 
             # 進捗表示（処理速度と推定残り時間を含む）
             current_time = time.time()
             # 最初のフレーム処理時、または10フレームごと、または5秒ごとに表示
-            if processed_frame_count == 1 or processed_frame_count % 10 == 0 or (current_time - last_progress_time) >= 5.0:
+            if (
+                processed_frame_count == 1
+                or processed_frame_count % 10 == 0
+                or (current_time - last_progress_time) >= 5.0
+            ):
                 elapsed_time = current_time - start_time
                 if processed_frame_count > 0 and elapsed_time > 0:
                     fps = processed_frame_count / elapsed_time
-                    remaining_frames = frame_num - processed_frame_count if frame_num > 0 else 0
+                    remaining_frames = (
+                        frame_num - processed_frame_count if frame_num > 0 else 0
+                    )
                     estimated_remaining = remaining_frames / fps if fps > 0 else 0
-                    print(f"Processed {processed_frame_count}/{frame_num} frames (skipped: {skipped_frame_count}) | "
-                          f"Speed: {fps:.1f} fps | Elapsed: {elapsed_time:.0f}s | "
-                          f"Estimated remaining: {estimated_remaining:.0f}s")
+                    print(
+                        f"Processed {processed_frame_count}/{frame_num} frames (skipped: {skipped_frame_count}) | "
+                        f"Speed: {fps:.1f} fps | Elapsed: {elapsed_time:.0f}s | "
+                        f"Estimated remaining: {estimated_remaining:.0f}s"
+                    )
                     last_progress_time = current_time
 
         elapsed_time = time.time() - start_time
-        print(f"\nFinished processing {processed_frame_count} frames (total: {frame_num}, skipped: {skipped_frame_count})")
+        print(
+            f"\nFinished processing {processed_frame_count} frames (total: {frame_num}, skipped: {skipped_frame_count})"
+        )
         print(f"Total time: {elapsed_time:.1f}s ({elapsed_time/60:.1f} min)")
         if processed_frame_count > 0:
             print(f"Average speed: {processed_frame_count/elapsed_time:.1f} fps")
@@ -387,10 +472,7 @@ Examples:
         print()
 
         # JSONファイルに保存
-        json_output = {
-            "frames": all_frames_data,
-            "statistics": statistics
-        }
+        json_output = {"frames": all_frames_data, "statistics": statistics}
         json_path = output_dir / "keypoints_3d.json"
         save_json(json_output, str(json_path))
 
@@ -398,11 +480,10 @@ Examples:
         csv_path = output_dir / "jump_statistics.csv"
         save_csv(statistics, trajectory, str(csv_path))
 
-        # 可視化動画を生成
-        if not args.no_video and visualization_frames:
-            video_path = output_dir / "jump_visualization.mp4"
-            fps = 30  # デフォルトFPS（.bagファイルから取得する場合は調整）
-            visualizer.create_video(visualization_frames, str(video_path), fps)
+        # 可視化動画を完成（動画ライターをクローズ）
+        if not args.no_video and video_writer is not None:
+            video_writer.release()
+            print(f"Video saved to: {video_path}")
 
         print("\n" + "=" * 60)
         print("Analysis complete!")
@@ -415,6 +496,7 @@ Examples:
     except Exception as e:
         print(f"\nError during analysis: {e}", file=sys.stderr)
         import traceback
+
         traceback.print_exc()
         sys.exit(1)
     finally:
@@ -423,4 +505,3 @@ Examples:
 
 if __name__ == "__main__":
     main()
-
