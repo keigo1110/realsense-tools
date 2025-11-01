@@ -1,7 +1,7 @@
 """
 Jump Analyzer
 
-.bagファイルからOpenPoseを使用して3D姿勢推定を行い、
+.bagファイルからYOLOv8-Poseを使用して3D姿勢推定を行い、
 ジャンプの高さ・距離・軌跡を測定するメインスクリプト
 """
 
@@ -10,13 +10,14 @@ import json
 import csv
 import os
 import sys
+import time
 from pathlib import Path
 
 import cv2
 import numpy as np
 
 from realsense_utils import BagFileReader
-from openpose_3d import OpenPoseDetector, COCO_KEYPOINTS
+from yolov8_pose_3d import YOLOv8PoseDetector, COCO_KEYPOINTS
 from jump_detector import JumpDetector
 from visualizer import JumpVisualizer
 
@@ -145,13 +146,23 @@ Examples:
 
     # オプション引数
     parser.add_argument('--model-dir', type=str, default='models',
-                       help='Directory for OpenPose model files (default: models)')
+                       help='Directory for YOLOv8-Pose model files (default: models)')
+    parser.add_argument('--model-name', type=str, default='yolov8n-pose.pt',
+                       help='YOLOv8-Pose model name (yolov8n-pose.pt, yolov8s-pose.pt, etc.) (default: yolov8n-pose.pt)')
     parser.add_argument('--threshold-vertical', type=float, default=0.05,
                        help='Vertical jump detection threshold in meters (default: 0.05)')
     parser.add_argument('--threshold-horizontal', type=float, default=0.1,
                        help='Horizontal jump detection threshold in meters (default: 0.1)')
     parser.add_argument('--no-video', action='store_true',
                        help='Skip video visualization output')
+
+    # 高速化オプション
+    parser.add_argument('--frame-skip', type=int, default=1,
+                       help='Process every N frames (1=all frames, 2=every other frame, etc.) (default: 1)')
+    parser.add_argument('--resize-factor', type=float, default=1.0,
+                       help='Resize image before YOLOv8-Pose inference (1.0=no resize, 0.5=half size) (default: 1.0)')
+    parser.add_argument('--minimal-data', action='store_true',
+                       help='Save only jump detection frames in JSON (faster, smaller file)')
 
     args = parser.parse_args()
 
@@ -165,17 +176,17 @@ Examples:
         sys.exit(1)
 
     print("=" * 60)
-    print("Jump Analyzer - OpenPose 3D Analysis")
+    print("Jump Analyzer - YOLOv8-Pose 3D Analysis")
     print("=" * 60)
     print(f"Input file: {args.input}")
     print(f"Output directory: {args.output}")
     print()
 
-    # OpenPoseモデルの読み込み
-    print("Loading OpenPose model...")
-    openpose = OpenPoseDetector(model_dir=args.model_dir)
-    if not openpose.load_model():
-        print("Error: Failed to load OpenPose model", file=sys.stderr)
+    # YOLOv8-Poseモデルの読み込み
+    print("Loading YOLOv8-Pose model...")
+    yolo_pose = YOLOv8PoseDetector(model_name=args.model_name, model_dir=args.model_dir)
+    if not yolo_pose.load_model():
+        print("Error: Failed to load YOLOv8-Pose model", file=sys.stderr)
         sys.exit(1)
 
     # バグファイルの読み込み
@@ -199,7 +210,21 @@ Examples:
     visualization_frames = []
 
     print("\nProcessing frames...")
+    if args.frame_skip > 1:
+        print(f"  Frame skipping: Processing every {args.frame_skip} frame(s)")
+    if args.resize_factor < 1.0:
+        print(f"  Image resize: {args.resize_factor*100:.0f}% of original size")
+    if args.minimal_data:
+        print("  Minimal data mode: Saving only jump detection frames")
+    print()
+    print("Note: First frame processing may take longer (model warm-up)...")
+    print()
+
     frame_num = 0
+    processed_frame_count = 0
+    skipped_frame_count = 0
+    start_time = time.time()
+    last_progress_time = start_time
 
     try:
         while True:
@@ -216,13 +241,50 @@ Examples:
 
             frame_num += 1
 
-            # 2D keypointsを検出
-            keypoints_2d = openpose.detect_keypoints(color_image)
+            # フレームスキッピング
+            if frame_num % args.frame_skip != 0:
+                skipped_frame_count += 1
+                continue
+
+            processed_frame_count += 1
+
+            # 画像リサイズ（YOLOv8-Pose推論前）
+            original_shape = color_image.shape[:2]
+            inference_image = color_image
+            resize_scale_x = 1.0
+            resize_scale_y = 1.0
+
+            if args.resize_factor < 1.0:
+                new_width = int(color_image.shape[1] * args.resize_factor)
+                new_height = int(color_image.shape[0] * args.resize_factor)
+                inference_image = cv2.resize(color_image, (new_width, new_height))
+                resize_scale_x = color_image.shape[1] / new_width
+                resize_scale_y = color_image.shape[0] / new_height
+
+            # 2D keypointsを検出（リサイズ済み画像を使用）
+            if processed_frame_count == 1:
+                print(f"Processing first frame (frame {frame_num})...")
+
+            # ポーズ推定の時間を測定
+            pose_start = time.time()
+            keypoints_2d = yolo_pose.detect_keypoints(inference_image)
+            pose_time = time.time() - pose_start
+
+            # keypoints座標を元の画像サイズにスケール
+            if args.resize_factor < 1.0 and keypoints_2d:
+                scaled_keypoints_2d = []
+                for kp in keypoints_2d:
+                    if kp[0] is not None and kp[1] is not None:
+                        scaled_keypoints_2d.append((kp[0] * resize_scale_x, kp[1] * resize_scale_y, kp[2]))
+                    else:
+                        scaled_keypoints_2d.append(kp)
+                keypoints_2d = scaled_keypoints_2d
 
             if keypoints_2d is None:
                 continue
 
             # 3D keypointsを計算
+            depth_start = time.time()
             keypoints_3d = {}
             for i, (kp_name, kp_2d) in enumerate(zip(COCO_KEYPOINTS, keypoints_2d)):
                 if kp_2d[0] is not None and kp_2d[1] is not None:
@@ -237,34 +299,49 @@ Examples:
                         keypoints_3d[kp_name] = (None, None, None)
                 else:
                     keypoints_3d[kp_name] = (None, None, None)
+            depth_time = time.time() - depth_start
+
+            # 最初の数フレームで時間を表示
+            if processed_frame_count <= 5:
+                total_time = pose_time + depth_time
+                print(f"Frame {processed_frame_count}: "
+                      f"Pose={pose_time:.3f}s ({pose_time/total_time*100:.1f}%), "
+                      f"3D={depth_time:.3f}s ({depth_time/total_time*100:.1f}%)")
 
             # ジャンプ検出
             timestamp = color_frame.get_timestamp()
-            jump_result = jump_detector.update(frame_num, keypoints_3d, timestamp)
+            # frame_numではなくprocessed_frame_countを使用（スキップ考慮）
+            jump_result = jump_detector.update(processed_frame_count, keypoints_3d, timestamp)
 
-            # フレームデータを保存
-            frame_data = {
-                "frame": frame_num,
-                "timestamp": timestamp,
-                "keypoints": convert_keypoints_to_dict(keypoints_2d, keypoints_3d)
-            }
+            # フレームデータを保存（minimal_dataモードではジャンプ検出時のみ）
+            should_save = True
+            if args.minimal_data:
+                should_save = jump_result is not None and jump_result.get("state") in ["jump_start", "jump_end", "jumping"]
 
-            if jump_result:
-                frame_data["jump_result"] = {
-                    "state": jump_result.get("state", "unknown"),
-                    "height": jump_result.get("height"),
-                    "position": jump_result.get("position"),
-                    "jump_type": jump_result.get("jump_type"),
-                    "jump_height": jump_result.get("jump_height"),
-                    "jump_distance": jump_result.get("jump_distance")
+            if should_save:
+                frame_data = {
+                    "frame": frame_num,
+                    "processed_frame": processed_frame_count,
+                    "timestamp": timestamp,
+                    "keypoints": convert_keypoints_to_dict(keypoints_2d, keypoints_3d)
                 }
 
-            all_frames_data.append(frame_data)
+                if jump_result:
+                    frame_data["jump_result"] = {
+                        "state": jump_result.get("state", "unknown"),
+                        "height": jump_result.get("height"),
+                        "position": jump_result.get("position"),
+                        "jump_type": jump_result.get("jump_type"),
+                        "jump_height": jump_result.get("jump_height"),
+                        "jump_distance": jump_result.get("jump_distance")
+                    }
+
+                all_frames_data.append(frame_data)
 
             # 可視化フレームを生成
             if not args.no_video:
                 # スケルトンを描画
-                skeleton_image = openpose.draw_skeleton(color_image.copy(), keypoints_2d)
+                skeleton_image = yolo_pose.draw_skeleton(color_image.copy(), keypoints_2d)
 
                 # 統計情報を取得
                 statistics = jump_detector.get_statistics()
@@ -273,11 +350,25 @@ Examples:
                 vis_frame = visualizer.draw_frame(skeleton_image, keypoints_2d, jump_result, statistics)
                 visualization_frames.append(vis_frame)
 
-            # 進捗表示
-            if frame_num % 30 == 0:
-                print(f"Processed {frame_num} frames...")
+            # 進捗表示（処理速度と推定残り時間を含む）
+            current_time = time.time()
+            # 最初のフレーム処理時、または10フレームごと、または5秒ごとに表示
+            if processed_frame_count == 1 or processed_frame_count % 10 == 0 or (current_time - last_progress_time) >= 5.0:
+                elapsed_time = current_time - start_time
+                if processed_frame_count > 0 and elapsed_time > 0:
+                    fps = processed_frame_count / elapsed_time
+                    remaining_frames = frame_num - processed_frame_count if frame_num > 0 else 0
+                    estimated_remaining = remaining_frames / fps if fps > 0 else 0
+                    print(f"Processed {processed_frame_count}/{frame_num} frames (skipped: {skipped_frame_count}) | "
+                          f"Speed: {fps:.1f} fps | Elapsed: {elapsed_time:.0f}s | "
+                          f"Estimated remaining: {estimated_remaining:.0f}s")
+                    last_progress_time = current_time
 
-        print(f"\nFinished processing {frame_num} frames")
+        elapsed_time = time.time() - start_time
+        print(f"\nFinished processing {processed_frame_count} frames (total: {frame_num}, skipped: {skipped_frame_count})")
+        print(f"Total time: {elapsed_time:.1f}s ({elapsed_time/60:.1f} min)")
+        if processed_frame_count > 0:
+            print(f"Average speed: {processed_frame_count/elapsed_time:.1f} fps")
 
         # 統計情報を取得
         statistics = jump_detector.get_statistics()

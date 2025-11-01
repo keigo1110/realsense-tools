@@ -1,6 +1,7 @@
 # RealSense 録画・分析ツール
 
-RealSense カメラから映像と深度データを`.bag`ファイルに録画し、OpenPose を使用した 3D 姿勢推定によるジャンプ分析を行う Python ツールです。
+RealSense カメラから映像と深度データを`.bag`ファイルに録画し、YOLOv8-Pose を使用した 3D 姿勢推定によるジャンプ分析を行う Python ツールです。
+YOLOv8-Pose は高速（CPU: 10-30fps, GPU: 100-200fps+）で、実用的な精度を実現します。
 
 ## システム要件
 
@@ -78,7 +79,8 @@ python pose-record.py --record my_recording.bag --enable-depth --resolution 1280
 
 ## 録画したファイルのジャンプ分析
 
-録画した`.bag`ファイルから OpenPose を使用して 3D 姿勢推定を行い、ジャンプの高さ・距離・軌跡を測定します。
+録画した`.bag`ファイルから YOLOv8-Pose を使用して 3D 姿勢推定を行い、ジャンプの高さ・距離・軌跡を測定します。
+YOLOv8-Pose は高速（CPU: 10-30fps, GPU: 100-200fps+）で、実用的な精度を実現します。
 
 ### 基本的な使い方
 
@@ -107,49 +109,55 @@ python jump_analyzer.py --input bagdata/my_recording.bag --output results/ \
 
 # 可視化動画をスキップ
 python jump_analyzer.py --input bagdata/my_recording.bag --output results/ --no-video
+
+# 高速化オプション（処理が遅い場合）
+# 2フレームおきに処理（2倍速）
+python jump_analyzer.py --input bagdata/my_recording.bag --output results/ --frame-skip 2
+
+# 画像を半分のサイズにリサイズしてから処理（約4倍速、精度はやや低下）
+python jump_analyzer.py --input bagdata/my_recording.bag --output results/ --resize-factor 0.5
+
+# 組み合わせて高速化（推奨）
+python jump_analyzer.py --input bagdata/my_recording.bag --output results/ \
+  --frame-skip 2 --resize-factor 0.7 --minimal-data --no-video
 ```
 
-### OpenPose モデルのダウンロード
+### YOLOv8-Pose モデルのインストール
 
-初回実行時、OpenPose モデルファイルが自動的にダウンロードされます（`models/`ディレクトリに保存）。
+YOLOv8-Pose は `ultralytics` ライブラリを使用します。初回実行時、モデルが自動的にダウンロードされます。
 
-自動ダウンロードが失敗した場合は、以下のいずれかの方法で手動ダウンロードしてください：
-
-**方法 1: GitHub から直接ダウンロード**
-
-1. ブラウザで以下の URL にアクセス：
-   - https://github.com/CMU-Perceptual-Computing-Lab/openpose/tree/master/models/pose/coco
-2. 以下のファイルをダウンロード：
-   - `pose_deploy_linevec.prototxt`
-   - `pose_iter_440000.caffemodel` (約 200MB)
-3. `models/`ディレクトリに保存
-
-**方法 2: getModels.sh スクリプトを使用（推奨）**
+**インストール手順:**
 
 ```bash
-# OpenPoseリポジトリをクローン
-git clone https://github.com/CMU-Perceptual-Computing-Lab/openpose.git
-cd openpose/models
-
-# モデルファイルを自動ダウンロード（公式スクリプト）
-bash getModels.sh
-
-# モデルファイルをコピー（プロジェクトディレクトリに戻る）
-cd ../..
-mkdir -p models
-cp openpose/models/pose/coco/pose_deploy_linevec.prototxt models/
-cp openpose/models/pose/coco/pose_iter_440000.caffemodel models/
+pip install ultralytics
 ```
 
-**方法 3: 直接 URL からダウンロード（試行）**
+**動作確認:**
 
 ```bash
-# 公式サーバーから直接ダウンロード（利用可能な場合）
-cd models
-curl -L http://posefs1.perception.cs.cmu.edu/OpenPose/models/pose/coco/pose_iter_440000.caffemodel -o pose_iter_440000.caffemodel
+python -c "from ultralytics import YOLO; print('YOLOv8-Poseインストール成功')"
+```
 
-# プロトファイルも取得（既にダウンロード済みの場合は不要）
-curl -L https://github.com/CMU-Perceptual-Computing-Lab/openpose/raw/master/models/pose/coco/pose_deploy_linevec.prototxt -o pose_deploy_linevec.prototxt
+初回実行時、YOLOv8-Pose モデルが自動的にダウンロードされます（モデルサイズは選択したモデルにより異なります）。
+
+**モデルの種類:**
+
+- `yolov8n-pose.pt`: nano（超高速、やや精度低下）- **推奨（デフォルト）**
+- `yolov8s-pose.pt`: small（高速、バランス型）
+- `yolov8m-pose.pt`: medium（中速、高精度）
+- `yolov8l-pose.pt`: large（やや低速、高精度）
+- `yolov8x-pose.pt`: extra large（低速、最高精度）
+
+**処理速度について:**
+
+- CPU 環境: 約 10-30fps（モデルサイズによる）
+- GPU 環境: 100-200fps+（GPU 性能による）
+
+モデルを指定する場合:
+
+```bash
+python jump_analyzer.py --input bagdata/my_recording.bag --output results/ \
+  --model-name yolov8s-pose.pt  # より高精度なモデルを使用
 ```
 
 ### 分析結果の見方
@@ -200,7 +208,16 @@ pip install pyrealsense2
 
 - **RealSense カメラが認識されない**: カメラが接続されているか確認し、他のプログラムがカメラを使用していないか確認してください
 - **.bag ファイルが読み込めない**: 深度データが記録されているか確認してください（`--enable-depth`オプションで録画）
-- **OpenPose モデルのダウンロードエラー**: 手動でモデルファイルをダウンロードして`models/`ディレクトリに配置してください
+- **YOLOv8-Pose のインストールエラー**:
+  - `ultralytics`のインストールエラーが発生する場合：
+    ```bash
+    # pipをアップグレードしてから再試行
+    pip install --upgrade pip
+    pip install ultralytics
+    ```
+  - モデルのダウンロードエラーが発生する場合：
+    - インターネット接続を確認してください
+    - モデルは初回実行時に自動ダウンロードされます
 
 ## 関連リンク
 

@@ -2,6 +2,11 @@ numpy
 opencv-python
 matplotlib
 
+# YOLOv8-Pose用
+# 高速で高精度な姿勢推定のため、YOLOv8-Poseを使用
+# インストール: pip install ultralytics
+ultralytics>=8.0.0
+
 # pyrealsense2: プラットフォームによって異なるパッケージを使用
 # macOS: pyrealsense2-macosx または pyrealsense2-mac
 # Linux/Windows: pyrealsense2 (公式パッケージ)
