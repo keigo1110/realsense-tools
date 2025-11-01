@@ -59,7 +59,7 @@ def main():
     width, height = args.resolution
 
     # カラーストリームを有効化
-    config.enable_stream(rs.stream.color, width, height, rs.format.bgr8, args.fps)
+    config.enable_stream(rs.stream.color, width, height, rs.format.rgb8, args.fps)
 
     # 深度ストリームを有効化（オプション）
     if args.enable_depth:
@@ -91,6 +91,9 @@ def main():
 
             # 画像を取得して表示
             image = np.asanyarray(color_frame.get_data())
+
+            # RGBからBGRに変換（OpenCV表示用）
+            image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
 
             # 録画状態を表示
             status_text = "RECORDING" if recording else "PAUSED"
