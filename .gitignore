@@ -1,0 +1,27 @@
+# IDE
+.idea
+.vscode
+*.swp
+*.swo
+*~
+
+# Python
+venv
+env
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Recording files
+*.bag
+
+# Build
+build
+dist
+*.egg-info

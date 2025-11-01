@@ -1,0 +1,8 @@
+--find-links https://github.com/cansik/pyrealsense2-macosx/releases
+
+numpy
+opencv-python
+pyrealsense2
+
+# python-osc
+# mediapipe>=0.10.21
