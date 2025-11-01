@@ -1,5 +1,8 @@
---find-links https://github.com/cansik/pyrealsense2-macosx/releases
-
 numpy
 opencv-python
-pyrealsense2
+matplotlib
+
+# pyrealsense2: プラットフォームによって異なるパッケージを使用
+# macOS: pyrealsense2-macosx または pyrealsense2-mac
+# Linux/Windows: pyrealsense2 (公式パッケージ)
+# 詳細はREADME.mdの「エラーが発生した場合」セクションを参照してください

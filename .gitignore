@@ -25,3 +25,8 @@ Thumbs.db
 build
 dist
 *.egg-info
+
+# folder
+bagdata/
+models/
+results/
