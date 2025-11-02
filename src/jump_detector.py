@@ -418,16 +418,6 @@ class JumpDetector:
                 self.jump_start_timestamp = timestamp
                 self.jump_start_position = (x, y, z)
             
-            # 離陸: 両足が床から離れる、または高さが上昇する
-            # より柔軟な離陸検出: 床からの距離が増加した場合も検出
-            height_increased = False
-            if not self._initial_state and height_above_floor is not None and len(self.height_above_floor_history) >= 3:
-                # 過去3フレームの平均高さと比較（床からの距離）
-                recent_heights_above_floor = list(self.height_above_floor_history)[-3:]
-                if recent_heights_above_floor:
-                    avg_recent_height = sum(recent_heights_above_floor) / len(recent_heights_above_floor)
-                    height_increased = height_above_floor > avg_recent_height + 0.05  # 5cm以上上昇
-            
             # 初期状態を解除（開始位置が記録されてから数フレーム後）
             if self._initial_state and self.jump_start_position is not None:
                 if len(self.height_history) >= 5:
@@ -450,14 +440,9 @@ class JumpDetector:
                         if avg_recent > self.baseline_ankle_height + 0.05:
                             ankle_height_increased = True
                 
-                # 腰の高さ上昇のチェック（過去2フレームと比較）- 補助的な判定
-                if not height_increased and height_above_floor is not None and len(self.height_above_floor_history) >= 2:
-                    prev_height = list(self.height_above_floor_history)[-2]
-                    if height_above_floor > prev_height + 0.03:  # 3cm以上上昇
-                        height_increased = True
-                
-                # 足首の高さが上昇した場合、または腰の高さが上昇した場合に離陸と判定
-                if ankle_height_increased or height_increased:
+                # 足首の高さが上昇した場合に離陸と判定
+                # 注: 腰の高さ上昇は補助判定として使用しない（ジャンプ前のかがむ動作で誤検出の可能性があるため）
+                if ankle_height_increased:
                     # 離陸時の全キーポイントの距離を記録
                     takeoff_distances = {}
                     if self.use_floor_detection and self.floor_detector:

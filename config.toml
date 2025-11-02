@@ -17,8 +17,8 @@ min_jump_height = 0.10  # 有効なジャンプと認識する最小高さ（メ
 min_air_time = 0.20  # 有効なジャンプと認識する最小滞空時間（秒、デフォルト: 200ms）
 
 # 出力オプション
-no_video = false  # ビデオ出力をスキップ
-no_3d_animation = false  # 3Dアニメーションをスキップ
+enable_video = true  # ビデオ出力を有効化（true: 出力する、false: スキップ）
+enable_3d_animation = true  # 3Dアニメーションを有効化（true: 生成する、false: スキップ）
 interactive_3d = true  # インタラクティブ3Dアニメーションを表示
 
 # キーポイントスムージング
@@ -26,16 +26,16 @@ smooth_keypoints = true  # キーポイントスムージングを有効化（fa
 smooth_window_size = 5  # 移動平均のウィンドウサイズ（smooth_keypoints: trueの場合に使用）
 
 # 深度データ処理
-no_depth_interpolation = false  # 深度補間を無効化
+enable_depth_interpolation = true  # 深度補間を有効化（true: 補間する、false: 単一ピクセルを使用）
 depth_kernel_size = 3  # 深度補間カーネルサイズ（3, 5, 7など）
 
 # カルマンフィルタ（高度なスムージング）
-use_kalman_filter = false  # カルマンフィルタを使用（smooth_keypointsより高精度だが遅い）
+use_kalman_filter = true  # カルマンフィルタを使用（smooth_keypointsより高精度だが遅い）
 kalman_process_noise = 0.03  # カルマンフィルタ処理ノイズ（小さいほど滑らか、大きいほど反応が速い）
 kalman_measurement_noise = 0.1  # カルマンフィルタ測定ノイズ（大きいほど予測を信頼）
 
 # 床検出（高精度なジャンプ検出）
-no_floor_detection = false  # 床検出を無効化（従来の高さベース検出を使用）
+enable_floor_detection = true  # 床検出を有効化（true: 床検出を使用、false: 従来の高さベース検出を使用）
 
 # 再生時間範囲（秒）
 # 0の場合は最初から/最後まで（nullは使えないので0で代用）

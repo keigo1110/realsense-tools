@@ -362,6 +362,268 @@ def plot_keypoint_coordinate_timeline(all_frames_data, output_dir, floor_detecto
     print(f"Keypoint Z coordinate timeline plot saved to: {z_path}")
 
 
+def plot_jump_trajectory(trajectory, statistics, output_dir, floor_detector=None):
+    """
+    ジャンプ軌跡を可視化（水平面と高さ-時間グラフ）
+    
+    Args:
+        trajectory: 軌跡データのリスト
+        statistics: 統計情報（ジャンプ検出結果を含む）
+        output_dir: 出力ディレクトリ
+        floor_detector: 床検出器（オプション）
+    """
+    if not trajectory:
+        print("Warning: No trajectory data available for jump trajectory plot")
+        return
+    
+    # タイムスタンプを取得（秒単位に変換）
+    timestamps = []
+    positions_x = []
+    positions_y = []
+    positions_z = []
+    frames = []
+    
+    for point in trajectory:
+        timestamp = point.get("timestamp")
+        pos = point.get("position", (None, None, None))
+        frame = point.get("frame")
+        
+        if pos[0] is not None and pos[1] is not None and pos[2] is not None:
+            # タイムスタンプを秒に変換（ミリ秒単位の可能性がある）
+            if timestamp is not None:
+                if timestamp > 1000000000:  # ミリ秒単位と判定
+                    timestamp_sec = timestamp / 1000.0
+                else:
+                    timestamp_sec = timestamp
+                # 最初のタイムスタンプを0秒に基準化
+                if not timestamps:
+                    base_timestamp = timestamp_sec
+                    timestamps.append(0.0)
+                else:
+                    timestamps.append(timestamp_sec - base_timestamp)
+            else:
+                timestamps.append(None)
+            
+            positions_x.append(pos[0])
+            positions_y.append(pos[1])  # Y軸は高さ（RealSense座標系では下が正）
+            positions_z.append(pos[2])
+            frames.append(frame)
+    
+    if not positions_x:
+        print("Warning: No valid trajectory positions found for jump trajectory plot")
+        return
+    
+    # 日本語ラベル使用可否を確認
+    USE_JAPANESE_LABELS = True
+    try:
+        import matplotlib.font_manager as fm
+        japanese_fonts = [f.name for f in fm.fontManager.ttflist if 'japan' in f.name.lower() or 'noto' in f.name.lower() or 'gothic' in f.name.lower()]
+        if not japanese_fonts:
+            USE_JAPANESE_LABELS = False
+    except:
+        USE_JAPANESE_LABELS = False
+    
+    # カラーマップを準備（複数のグラフで使用）
+    try:
+        from matplotlib import colormaps
+        colors = colormaps.get_cmap('tab10')
+    except (AttributeError, ImportError):
+        try:
+            colors = plt.get_cmap('tab10')
+        except:
+            from matplotlib import cm
+            colors = cm.get_cmap('tab10')
+    
+    # 1. 水平面（XZ平面）での軌跡を描画
+    fig, ax = plt.subplots(figsize=(12, 10))
+    
+    # 全軌跡を描画（薄いグレー）
+    ax.plot(positions_x, positions_z, 'gray', alpha=0.3, linewidth=1, label='Full trajectory' if not USE_JAPANESE_LABELS else '全軌跡')
+    
+    # ジャンプ中の軌跡を強調
+    jumps = statistics.get("jumps", [])
+    if jumps:
+        for i, jump in enumerate(jumps):
+            frame_start = jump.get("frame_start")
+            frame_takeoff = jump.get("frame_takeoff", frame_start)
+            frame_end = jump.get("frame_end")
+            
+            # ジャンプ範囲のインデックスを取得
+            jump_indices = []
+            for j, frame in enumerate(frames):
+                if frame_start is not None and frame_end is not None:
+                    if frame_start <= frame <= frame_end:
+                        jump_indices.append(j)
+            
+            if jump_indices:
+                jump_x = [positions_x[idx] for idx in jump_indices]
+                jump_z = [positions_z[idx] for idx in jump_indices]
+                color = colors(i % 10)
+                
+                # ジャンプ軌跡を描画
+                ax.plot(jump_x, jump_z, color=color, linewidth=2.5, alpha=0.8,
+                       label=f"Jump {i+1}" if not USE_JAPANESE_LABELS else f"ジャンプ {i+1}")
+                
+                # 開始点、離陸点、着地点をマーク
+                if jump_indices:
+                    start_idx = jump_indices[0]
+                    takeoff_idx = None
+                    end_idx = jump_indices[-1]
+                    
+                    # 離陸点を探す
+                    for idx in jump_indices:
+                        if frames[idx] == frame_takeoff:
+                            takeoff_idx = idx
+                            break
+                    
+                    # 開始点を描画（緑の円）- 最初のジャンプのみ凡例に追加
+                    ax.scatter([positions_x[start_idx]], [positions_z[start_idx]], 
+                             c='green', s=100, marker='o', edgecolors='black', linewidths=1.5,
+                             zorder=5, label='Start' if not USE_JAPANESE_LABELS else '開始' if i == 0 else '')
+                    
+                    # 離陸点を描画（オレンジの三角）- 最初のジャンプのみ凡例に追加
+                    if takeoff_idx is not None:
+                        ax.scatter([positions_x[takeoff_idx]], [positions_z[takeoff_idx]], 
+                                 c='orange', s=100, marker='^', edgecolors='black', linewidths=1.5,
+                                 zorder=5, label='Takeoff' if not USE_JAPANESE_LABELS else '離陸' if i == 0 else '')
+                    
+                    # 着地点を描画（赤の四角）- 最初のジャンプのみ凡例に追加
+                    ax.scatter([positions_x[end_idx]], [positions_z[end_idx]], 
+                             c='red', s=100, marker='s', edgecolors='black', linewidths=1.5,
+                             zorder=5, label='Landing' if not USE_JAPANESE_LABELS else '着地' if i == 0 else '')
+    
+    # 軸ラベルとタイトル
+    if USE_JAPANESE_LABELS:
+        ax.set_xlabel('X座標 (m) - 左右方向', fontsize=12, fontweight='bold')
+        ax.set_ylabel('Z座標 (m) - 前後方向', fontsize=12, fontweight='bold')
+        ax.set_title('ジャンプ軌跡（水平面）', fontsize=14, fontweight='bold')
+    else:
+        ax.set_xlabel('X coordinate (m) - Right', fontsize=12, fontweight='bold')
+        ax.set_ylabel('Z coordinate (m) - Forward', fontsize=12, fontweight='bold')
+        ax.set_title('Jump Trajectory (Horizontal Plane)', fontsize=14, fontweight='bold')
+    
+    ax.grid(True, alpha=0.3, linestyle='--')
+    # 凡例をグラフの外側（右側）に配置して重なりを避ける
+    ax.legend(loc='upper left', bbox_to_anchor=(1.02, 1), fontsize=10, framealpha=0.9)
+    ax.set_aspect('equal', adjustable='box')
+    plt.tight_layout()
+    
+    trajectory_horizontal_path = output_dir / "jump_trajectory_horizontal.png"
+    plt.savefig(str(trajectory_horizontal_path), dpi=300, bbox_inches='tight')
+    plt.close()
+    print(f"Jump trajectory (horizontal plane) plot saved to: {trajectory_horizontal_path}")
+    
+    # 2. 高さ（Y座標）と時間の関係を描画
+    # RealSense座標系ではY軸が下向きが正なので、反転して上向きが正になるようにする
+    fig, ax = plt.subplots(figsize=(14, 8))
+    
+    # Y座標を反転（RealSense座標系: 下向きが正 → 表示座標系: 上向きが正）
+    # 基準値を求める（床面の高さ = 最大Y値）
+    if positions_y:
+        y_min = min(positions_y)
+        y_max = max(positions_y)
+        # RealSense座標系ではYが大きいほど下にあるので、最大Y値が床面
+        # 床検出が有効な場合は、より正確な床面の高さを使用することも可能
+        # ここでは最大Y値を床面として使用（軌跡データの中で最も低い位置）
+        y_floor = y_max  # 最大Y値を床面の基準とする（RealSense座標系では下が正）
+        # Y座標を反転: 床からの距離として表示（上向きが正、0以上）
+        # y_floor - y で計算: yが大きい（下）→0に近い、yが小さい（上）→大きな正の値
+        heights = [y_floor - y for y in positions_y]
+    else:
+        heights = []
+        y_floor = 0
+    
+    # 有効なタイムスタンプがあるかチェック
+    valid_timestamps = [t for t in timestamps if t is not None]
+    if valid_timestamps:
+        # タイムスタンプを使用
+        plot_x = timestamps
+        x_label = 'Time (seconds)' if not USE_JAPANESE_LABELS else '時間 (秒)'
+    else:
+        # フレーム番号を使用
+        plot_x = frames
+        x_label = 'Frame number' if not USE_JAPANESE_LABELS else 'フレーム番号'
+    
+    # 全軌跡を描画（薄いグレー）
+    ax.plot(plot_x, heights, 'gray', alpha=0.3, linewidth=1, 
+           label='Full trajectory' if not USE_JAPANESE_LABELS else '全軌跡')
+    
+    # ジャンプ中の軌跡を強調
+    if jumps:
+        for i, jump in enumerate(jumps):
+            frame_start = jump.get("frame_start")
+            frame_takeoff = jump.get("frame_takeoff", frame_start)
+            frame_end = jump.get("frame_end")
+            jump_height = jump.get("height", 0) * 100  # cmに変換
+            
+            # ジャンプ範囲のインデックスを取得
+            jump_indices = []
+            for j, frame in enumerate(frames):
+                if frame_start is not None and frame_end is not None:
+                    if frame_start <= frame <= frame_end:
+                        jump_indices.append(j)
+            
+            if jump_indices:
+                jump_x = [plot_x[idx] for idx in jump_indices if idx < len(plot_x)]
+                jump_heights = [heights[idx] for idx in jump_indices]  # 反転済みの高さを使用
+                color = colors(i % 10)
+                
+                # ジャンプ軌跡を描画
+                ax.plot(jump_x, jump_heights, color=color, linewidth=2.5, alpha=0.8,
+                       label=f"Jump {i+1} ({jump_height:.1f}cm)" if not USE_JAPANESE_LABELS 
+                       else f"ジャンプ {i+1} ({jump_height:.1f}cm)")
+                
+                # 開始点、離陸点、着地点をマーク
+                if jump_indices:
+                    start_idx = jump_indices[0]
+                    takeoff_idx = None
+                    end_idx = jump_indices[-1]
+                    
+                    # 離陸点を探す
+                    for idx in jump_indices:
+                        if frames[idx] == frame_takeoff:
+                            takeoff_idx = idx
+                            break
+                    
+                    # 開始点を描画（反転済みの高さを使用）- 最初のジャンプのみ凡例に追加
+                    if start_idx < len(plot_x) and start_idx < len(heights):
+                        ax.scatter([plot_x[start_idx]], [heights[start_idx]], 
+                                 c='green', s=100, marker='o', edgecolors='black', linewidths=1.5, zorder=5,
+                                 label='Start' if not USE_JAPANESE_LABELS else '開始' if i == 0 else '')
+                    
+                    # 離陸点を描画（反転済みの高さを使用）- 最初のジャンプのみ凡例に追加
+                    if takeoff_idx is not None and takeoff_idx < len(plot_x) and takeoff_idx < len(heights):
+                        ax.scatter([plot_x[takeoff_idx]], [heights[takeoff_idx]], 
+                                 c='orange', s=100, marker='^', edgecolors='black', linewidths=1.5, zorder=5,
+                                 label='Takeoff' if not USE_JAPANESE_LABELS else '離陸' if i == 0 else '')
+                    
+                    # 着地点を描画（反転済みの高さを使用）- 最初のジャンプのみ凡例に追加
+                    if end_idx < len(plot_x) and end_idx < len(heights):
+                        ax.scatter([plot_x[end_idx]], [heights[end_idx]], 
+                                 c='red', s=100, marker='s', edgecolors='black', linewidths=1.5, zorder=5,
+                                 label='Landing' if not USE_JAPANESE_LABELS else '着地' if i == 0 else '')
+    
+    # 軸ラベルとタイトル（反転済みなので上向きが正）
+    if USE_JAPANESE_LABELS:
+        ax.set_xlabel(x_label, fontsize=12, fontweight='bold')
+        ax.set_ylabel('高さ (m) - 床からの距離', fontsize=12, fontweight='bold')
+        ax.set_title('ジャンプ軌跡（高さ-時間）', fontsize=14, fontweight='bold')
+    else:
+        ax.set_xlabel(x_label, fontsize=12, fontweight='bold')
+        ax.set_ylabel('Height (m) - Distance from floor', fontsize=12, fontweight='bold')
+        ax.set_title('Jump Trajectory (Height-Time)', fontsize=14, fontweight='bold')
+    
+    ax.grid(True, alpha=0.3, linestyle='--')
+    # 凡例をグラフの外側（右側）に配置して重なりを避ける
+    ax.legend(loc='upper left', bbox_to_anchor=(1.02, 1), fontsize=10, framealpha=0.9)
+    plt.tight_layout()
+    
+    trajectory_height_path = output_dir / "jump_trajectory_height.png"
+    plt.savefig(str(trajectory_height_path), dpi=300, bbox_inches='tight')
+    plt.close()
+    print(f"Jump trajectory (height-time) plot saved to: {trajectory_height_path}")
+
+
 def load_config(config_path):
     """
     設定ファイルを読み込む
@@ -404,6 +666,18 @@ def merge_config_with_args(config, args):
         return args
     
     # 設定ファイルの値をデフォルトとして使用（コマンドライン引数が指定されていない場合）
+    # 新旧両方の形式に対応（enable_* 形式を優先、後方互換性のため no_* 形式もサポート）
+    
+    # 新しいenable_*形式をno_*形式に変換（コマンドライン引数との互換性のため）
+    if 'enable_video' in config:
+        config['no_video'] = not config['enable_video']
+    if 'enable_3d_animation' in config:
+        config['no_3d_animation'] = not config['enable_3d_animation']
+    if 'enable_depth_interpolation' in config:
+        config['no_depth_interpolation'] = not config['enable_depth_interpolation']
+    if 'enable_floor_detection' in config:
+        config['no_floor_detection'] = not config['enable_floor_detection']
+    
     config_to_args_map = {
         'input': 'input',
         'output': 'output',
@@ -1145,6 +1419,9 @@ Examples:
         
         # キーポイントのX, Y, Z座標時系列グラフを作成
         plot_keypoint_coordinate_timeline(all_frames_data, output_dir, floor_detector)
+        
+        # ジャンプ軌跡の可視化画像を作成
+        plot_jump_trajectory(trajectory, statistics, output_dir, floor_detector)
 
         # CSVファイルに保存
         csv_path = output_dir / "jump_statistics.csv"

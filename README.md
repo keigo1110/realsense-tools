@@ -173,6 +173,11 @@ python jump_analyzer.py --input bagdata/my_recording.bag --output results/
 - `jump_statistics_trajectory.csv`: 軌跡データ
 - `jump_visualization.mp4`: 可視化動画（keypoints、軌跡、測定値を描画）
 - `keypoints_3d_animation.gif`: 3Dキーポイントアニメーション（スケルトンの3D動画）
+- `jump_trajectory_horizontal.png`: ジャンプ軌跡（水平面：XZ平面での移動経路）
+- `jump_trajectory_height.png`: ジャンプ軌跡（高さ-時間：ジャンプの高さ変化）
+- `keypoint_x_timeline.png`: 全キーポイントのX座標時系列グラフ
+- `keypoint_y_timeline.png`: 全キーポイントのY座標時系列グラフ
+- `keypoint_z_timeline.png`: 全キーポイントのZ座標時系列グラフ
 
 ### インタラクティブ3Dアニメーション
 
@@ -220,8 +225,8 @@ min_jump_height = 0.10
 min_air_time = 0.20
 
 # 出力オプション
-no_video = false
-no_3d_animation = false
+enable_video = true  # ビデオ出力を有効化（true: 出力する、false: スキップ）
+enable_3d_animation = true  # 3Dアニメーションを有効化（true: 生成する、false: スキップ）
 interactive_3d = true
 
 # キーポイントスムージング
@@ -229,7 +234,7 @@ smooth_keypoints = true
 smooth_window_size = 5
 
 # 深度データ処理
-no_depth_interpolation = false
+enable_depth_interpolation = true  # 深度補間を有効化（true: 補間する、false: 単一ピクセルを使用）
 depth_kernel_size = 3
 
 # カルマンフィルタ
@@ -238,7 +243,7 @@ kalman_process_noise = 0.03
 kalman_measurement_noise = 0.1
 
 # 床検出
-no_floor_detection = false
+enable_floor_detection = true  # 床検出を有効化（true: 床検出を使用、false: 従来の高さベース検出を使用）
 
 # 再生時間範囲（秒、0の場合は最初から/最後まで）
 start_time = 5.0
@@ -370,6 +375,9 @@ python jump_analyzer.py --help
 - `jump_statistics_*.csv`: 統計情報、ジャンプ詳細、軌跡データ（CSV形式）
 - `jump_visualization.mp4`: 2D可視化動画（キーポイント、軌跡、測定値を描画）
 - `keypoints_3d_animation.gif`: 3Dキーポイントアニメーション（またはインタラクティブ表示）
+- `jump_trajectory_horizontal.png`: ジャンプ軌跡（水平面：XZ平面での移動経路、開始点・離陸点・着地点をマーク）
+- `jump_trajectory_height.png`: ジャンプ軌跡（高さ-時間：ジャンプの高さ変化を時系列で表示）
+- `keypoint_*_timeline.png`: 全キーポイントの各座標軸の時系列グラフ
 
 ## 関連ドキュメント
 
