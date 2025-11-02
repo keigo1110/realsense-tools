@@ -129,7 +129,37 @@ python pose-record.py --record my_recording.bag --enable-depth --resolution 1280
 
 録画した`.bag`ファイルから YOLOv8-Pose を使用して 3D 姿勢推定を行い、ジャンプの高さ・距離・軌跡を測定します。
 
-#### 基本的な分析
+#### 設定ファイルを使用する方法（推奨）
+
+設定ファイル（`config.toml`）を使用することで、すべてのパラメータを一元管理できます。
+
+1. **設定ファイルを準備**
+   
+   `config.toml`ファイルを作成し、パラメータを設定します：
+   
+   ```toml
+   input = "bagdata/my_recording.bag"
+   output = "results/"
+   model_name = "yolov8x-pose.pt"
+   interactive_3d = true
+   # その他の設定...
+   ```
+
+2. **実行**
+   
+   ```bash
+   python jump_analyzer.py --config config.toml
+   ```
+   
+   コマンドライン引数で一部のパラメータを上書きすることも可能です：
+   
+   ```bash
+   python jump_analyzer.py --config config.toml --interactive-3d
+   ```
+
+#### コマンドライン引数を使用する方法
+
+設定ファイルを使わない場合、コマンドライン引数で直接指定できます：
 
 ```bash
 python jump_analyzer.py --input bagdata/my_recording.bag --output results/
@@ -148,8 +178,15 @@ python jump_analyzer.py --input bagdata/my_recording.bag --output results/
 
 **よく使う機能**: マウスで視点を自由に動かせるインタラクティブな3Dアニメーションを表示できます。
 
+**設定ファイルを使用する場合：**
 ```bash
-# インタラクティブモードで表示（推奨）
+# config.tomlで interactive_3d = true に設定
+python jump_analyzer.py --config config.toml
+```
+
+**コマンドライン引数を使用する場合：**
+```bash
+# インタラクティブモードで表示
 python jump_analyzer.py --input bagdata/my_recording.bag --output results/ --interactive-3d
 ```
 
@@ -162,6 +199,63 @@ python jump_analyzer.py --input bagdata/my_recording.bag --output results/ --int
 通常のGIF生成と併用することも可能です（`--interactive-3d`を指定するとインタラクティブ表示が優先されます）。
 
 ## 詳細オプション
+
+### 設定ファイル（config.toml）
+
+すべてのパラメータを`config.toml`で管理できます。`config.toml`の例：
+
+```toml
+# 入力・出力パス
+input = "bagdata/my_recording.bag"
+output = "results/"
+
+# モデル設定
+model_dir = "models"
+model_name = "yolov8x-pose.pt"
+
+# ジャンプ検出閾値
+threshold_vertical = 0.05
+threshold_horizontal = 0.1
+min_jump_height = 0.10
+min_air_time = 0.20
+
+# 出力オプション
+no_video = false
+no_3d_animation = false
+interactive_3d = true
+
+# キーポイントスムージング
+smooth_keypoints = true
+smooth_window_size = 5
+
+# 深度データ処理
+no_depth_interpolation = false
+depth_kernel_size = 3
+
+# カルマンフィルタ
+use_kalman_filter = false
+kalman_process_noise = 0.03
+kalman_measurement_noise = 0.1
+
+# 床検出
+no_floor_detection = false
+
+# 再生時間範囲（秒、0の場合は最初から/最後まで）
+start_time = 5.0
+end_time = 13.0
+
+# 高速化オプション
+frame_skip = 1
+resize_factor = 1.0
+minimal_data = false
+```
+
+設定ファイルを使用する場合：
+```bash
+python jump_analyzer.py --config config.toml
+```
+
+コマンドライン引数は設定ファイルの値を上書きします。
 
 ### 研究用途向け高精度設定
 
