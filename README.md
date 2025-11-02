@@ -277,6 +277,15 @@ python jump_analyzer.py --help
 - `jump_visualization.mp4`: 2D可視化動画（キーポイント、軌跡、測定値を描画）
 - `keypoints_3d_animation.gif`: 3Dキーポイントアニメーション（またはインタラクティブ表示）
 
+## 関連ドキュメント
+
+- **[METHODOLOGY.md](METHODOLOGY.md)**: ジャンプ計測方法論の詳細説明（論文実験章向け）
+  - 座標系の定義
+  - 床検出アルゴリズム
+  - ジャンプ検出アルゴリズム
+  - 測定値（高さ、距離、滞空時間）の計算方法
+  - データ処理手法
+
 ## トラブルシューティング
 
 ### pyrealsense2のインストールエラー

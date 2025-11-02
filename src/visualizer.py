@@ -12,7 +12,13 @@ import json
 from pathlib import Path
 
 # matplotlib関連のインポート（3Dアニメーション用）
+# インタラクティブモードが必要な場合は、関数内でバックエンドを動的に切り替える
 try:
+    import matplotlib
+    import sys
+    import os
+    # デフォルトはAgg（非インタラクティブ、ファイル出力用）
+    matplotlib.use('Agg', force=False)
     import matplotlib.pyplot as plt
     from mpl_toolkits.mplot3d import Axes3D
     import matplotlib.animation as animation
@@ -177,7 +183,17 @@ def create_3d_keypoint_animation(json_path, output_path=None, fps=30, keypoint_n
     if not MATPLOTLIB_AVAILABLE:
         print("Error: matplotlib is required for 3D animation. Install with: pip install matplotlib")
         return False
-
+    
+    # グローバル変数としてmatplotlibとpltを使用することを明示
+    # これにより、関数内でmatplotlibを参照してもローカル変数として扱われない
+    global matplotlib, plt
+    
+    # インタラクティブモードが必要な場合、バックエンドを保存（後で切り替える）
+    need_interactive = interactive or output_path is None
+    original_backend = None
+    if need_interactive:
+        original_backend = matplotlib.get_backend()
+    
     try:
         # JSONファイルを読み込み
         with open(json_path, 'r', encoding='utf-8') as f:
@@ -201,18 +217,18 @@ def create_3d_keypoint_animation(json_path, output_path=None, fps=30, keypoint_n
                 if keypoint_names is None:
                     keypoint_names = COCO_KEYPOINTS
             except ImportError:
-            # フォールバック: デフォルトのkeypoint名とペアを使用
-            if keypoint_names is None:
-                keypoint_names = [
-                    "Nose", "Neck", "RShoulder", "RElbow", "RWrist",
-                    "LShoulder", "LElbow", "LWrist", "RHip", "RKnee", "RAnkle",
-                    "LHip", "LKnee", "LAnkle", "REye", "LEye", "REar", "LEar"
+                # フォールバック: デフォルトのkeypoint名とペアを使用
+                if keypoint_names is None:
+                    keypoint_names = [
+                        "Nose", "Neck", "RShoulder", "RElbow", "RWrist",
+                        "LShoulder", "LElbow", "LWrist", "RHip", "RKnee", "RAnkle",
+                        "LHip", "LKnee", "LAnkle", "REye", "LEye", "REar", "LEar"
+                    ]
+                COCO_PAIRS = [
+                    [1, 2], [1, 5], [2, 3], [3, 4], [5, 6], [6, 7],
+                    [1, 8], [8, 9], [9, 10], [1, 11], [11, 12], [12, 13],
+                    [1, 0], [0, 14], [14, 16], [0, 15], [15, 17]
                 ]
-            COCO_PAIRS = [
-                [1, 2], [1, 5], [2, 3], [3, 4], [5, 6], [6, 7],
-                [1, 8], [8, 9], [9, 10], [1, 11], [11, 12], [12, 13],
-                [1, 0], [0, 14], [14, 16], [0, 15], [15, 17]
-            ]
 
         # 各フレームから3D keypointsを抽出
         keypoints_3d_list = []
@@ -272,6 +288,30 @@ def create_3d_keypoint_animation(json_path, output_path=None, fps=30, keypoint_n
 
         max_range = max(x_range, y_range, z_range) * (1 + margin)
 
+        # インタラクティブモードが必要な場合、バックエンドを切り替えてからFigureを作成
+        backend_switched_successfully = False
+        if need_interactive and original_backend == 'Agg':
+            has_display = os.environ.get('DISPLAY') is not None or sys.platform == 'win32' or sys.platform == 'darwin'
+            if has_display:
+                # 既存のFigureをすべて閉じる
+                try:
+                    plt.close('all')
+                except:
+                    pass
+                
+                interactive_backends = ['TkAgg', 'Qt5Agg', 'Qt4Agg']
+                for backend_name in interactive_backends:
+                    try:
+                        matplotlib.use(backend_name, force=True)
+                        # pyplotを再読み込みして新しいバックエンドを反映
+                        import importlib
+                        importlib.reload(matplotlib.pyplot)
+                        plt = matplotlib.pyplot
+                        backend_switched_successfully = True
+                        break
+                    except (ImportError, ValueError):
+                        continue
+
         # アニメーションを作成
         fig = plt.figure(figsize=(12, 9))
         ax = fig.add_subplot(111, projection='3d')
@@ -282,12 +322,11 @@ def create_3d_keypoint_animation(json_path, output_path=None, fps=30, keypoint_n
         ax.set_zlabel('Y (m) - Up', fontsize=10)
         ax.set_title('3D Keypoints Animation', fontsize=14)
         
-        # XZ平面を底面として表示するための初期視点設定
-        # elev: 仰角（上から見下ろす角度）、azim: 方位角（回転角度）
+        # 初期視点設定（XZ平面を底面として表示）
         initial_view = {'elev': 10, 'azim': 45}
         ax.view_init(**initial_view)
         
-        # インタラクティブモード用: プロット要素を追跡（外部変数として定義）
+        # インタラクティブモード用: プロット要素を追跡
         plot_objects = [] if interactive else None
         
         if interactive:
@@ -337,27 +376,20 @@ def create_3d_keypoint_animation(json_path, output_path=None, fps=30, keypoint_n
                 if x is not None and y is not None and z is not None:
                     kp_coords[i] = (x, y, z)
 
-            # スケルトンを描画（XZ平面を底面としてY軸が上方向になるように座標変換）
-            # RealSense座標: (x, y, z) -> 表示座標: (x, z, -y)
+            # スケルトンを描画（RealSense座標: (x, y, z) -> 表示座標: (x, z, -y)）
             for pair in COCO_PAIRS:
                 idx1, idx2 = pair[0], pair[1]
                 if idx1 in kp_coords and idx2 in kp_coords:
                     x1, y1, z1 = kp_coords[idx1]
                     x2, y2, z2 = kp_coords[idx2]
-                    # XZ平面を底面として表示（Y軸を上下反転）
                     line = ax.plot([x1, x2], [z1, z2], [-y1, -y2], 'b-', linewidth=2, alpha=0.6)
                     if interactive:
                         plot_objects.extend(line)
 
-            # keypointを描画（座標変換を適用）
+            # keypointを描画（重要なkeypointは大きく表示）
             for idx, (x, y, z) in kp_coords.items():
                 kp_name = keypoint_names[idx]
-                # 重要なkeypointは大きく、その他は小さく
-                if kp_name in ['Neck', 'Nose', 'RHip', 'LHip']:
-                    size = 50
-                else:
-                    size = 30
-                # XZ平面を底面として表示（Y軸を上下反転）
+                size = 50 if kp_name in ['Neck', 'Nose', 'RHip', 'LHip'] else 30
                 scatter = ax.scatter([x], [z], [-y], c='red', s=size, marker='o')
                 if interactive:
                     plot_objects.append(scatter)
@@ -373,17 +405,54 @@ def create_3d_keypoint_animation(json_path, output_path=None, fps=30, keypoint_n
 
         # インタラクティブモードの場合
         if interactive or output_path is None:
-            print(f"Displaying interactive 3D keypoint animation ({len(keypoints_3d_list)} frames)...")
-            print("Controls:")
-            print("  - Mouse drag: Rotate view")
-            print("  - Mouse wheel: Zoom in/out")
-            print("  - Close window to exit")
-            plt.ion()  # インタラクティブモードを有効化
-            plt.show(block=True)  # ウィンドウが閉じられるまで待機
-            plt.ioff()  # インタラクティブモードを無効化
-            return True
+            # インタラクティブ表示を試行
+            try:
+                import warnings
+                warnings.filterwarnings('ignore', category=UserWarning, module='matplotlib')
+                
+                current_backend = matplotlib.get_backend()
+                has_display = os.environ.get('DISPLAY') is not None or sys.platform == 'win32' or sys.platform == 'darwin'
+                
+                # インタラクティブバックエンドが利用可能な場合、表示を試行
+                if has_display and (backend_switched_successfully or current_backend != 'Agg'):
+                    print(f"Displaying interactive 3D keypoint animation ({len(keypoints_3d_list)} frames)...")
+                    print("Controls:")
+                    print("  - Mouse drag: Rotate view")
+                    print("  - Mouse wheel: Zoom in/out")
+                    print("  - Close window to exit")
+                    
+                    plt.ion()
+                    plt.show(block=True)
+                    plt.ioff()
+                    
+                    if original_backend:
+                        matplotlib.use(original_backend, force=True)
+                    
+                    return True
+                else:
+                    if not has_display:
+                        print("Warning: No display available (DISPLAY not set). Saving animation as file instead...")
+                    else:
+                        print("Warning: Interactive backend not available. Saving animation as file instead...")
+                    interactive = False
+            except Exception as e:
+                print(f"Warning: Interactive display not available ({e})")
+                print("  Saving animation as file instead...")
+                interactive = False
+                if original_backend:
+                    matplotlib.use(original_backend, force=True)
 
         # ファイルとして保存
+        if output_path is None:
+            if json_path and Path(json_path).exists():
+                output_path = str(Path(json_path).parent / "keypoints_3d_animation.gif")
+            else:
+                print("Warning: No output path specified and json_path not available. Skipping 3D animation file save.")
+                return False
+        else:
+            # output_pathが指定されている場合は、パスを文字列に変換
+            output_path = str(output_path)
+        
         print(f"Creating 3D keypoint animation ({len(keypoints_3d_list)} frames)...")
         
         output_ext = Path(output_path).suffix.lower()

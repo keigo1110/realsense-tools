@@ -21,12 +21,16 @@ except ImportError:
 class BagFileReader:
     """RealSense .bagファイルのリーダー"""
 
-    def __init__(self, bag_file_path):
+    def __init__(self, bag_file_path, start_time=None, end_time=None):
         """
         Args:
             bag_file_path: .bagファイルのパス
+            start_time: 開始時間（秒、Noneの場合は最初から）
+            end_time: 終了時間（秒、Noneの場合は最後まで）
         """
         self.bag_file_path = bag_file_path
+        self.start_time = start_time  # 開始時間（秒）
+        self.end_time = end_time  # 終了時間（秒）
         self.pipeline = None
         self.config = None
         self.depth_scale = None
@@ -40,6 +44,9 @@ class BagFileReader:
         self.repeated_frames = 0
         self.file_duration = None
         self.start_timestamp = None
+        self.playback_start_time = None  # 再生開始時のタイムスタンプ
+        self._manual_seek = False  # 手動シークフラグ（seek()が使えない場合）
+        self._skipped_frames_for_seek = 0  # シークのためにスキップしたフレーム数
 
     def initialize(self):
         """パイプラインを初期化し、ストリームを有効化"""
@@ -61,8 +68,44 @@ class BagFileReader:
                     self.playback = self.device.as_playback()
                     if self.playback:
                         self.file_duration = self.playback.get_duration()
+                        file_duration_sec = self.file_duration.total_seconds()
                         print(f"Bag file loaded: {self.bag_file_path}")
-                        print(f"Bag file duration: {self.file_duration.total_seconds():.2f} seconds")
+                        print(f"Bag file duration: {file_duration_sec:.2f} seconds")
+                        
+                        # 開始時間が指定されている場合はシーク（0はNoneとして扱う）
+                        if self.start_time is not None and self.start_time > 0:
+                            try:
+                                # RealSense SDKのseek()はdatetime.timedeltaを受け取る
+                                from datetime import timedelta
+                                time_delta = timedelta(seconds=self.start_time)
+                                self.playback.seek(time_delta)
+                                print(f"Seeking to start time: {self.start_time:.2f} seconds")
+                            except Exception as e:
+                                print(f"Warning: Failed to seek to start time: {e}")
+                                print(f"  Will skip frames manually until {self.start_time:.2f} seconds")
+                                # シークに失敗した場合は、手動でフレームをスキップする
+                                self._manual_seek = True
+                                # 初期化をリセット（最初のフレームからタイムスタンプを記録）
+                                self.start_timestamp = None
+                                self._skipped_frames_for_seek = 0
+                        
+                        # 終了時間の検証（0はNoneとして扱う）
+                        if self.end_time is not None and self.end_time > 0:
+                            if self.end_time <= (self.start_time or 0):
+                                raise ValueError(f"End time ({self.end_time:.2f}s) must be greater than start time ({self.start_time or 0:.2f}s)")
+                            if self.end_time > file_duration_sec:
+                                print(f"Warning: End time ({self.end_time:.2f}s) exceeds file duration ({file_duration_sec:.2f}s). Using file duration.")
+                                self.end_time = None
+                        
+                        # 時間範囲の表示
+                        if (self.start_time is not None and self.start_time > 0) or (self.end_time is not None and self.end_time > 0):
+                            start_str = f"{self.start_time:.2f}" if (self.start_time is not None and self.start_time > 0) else "0.00"
+                            end_str = f"{self.end_time:.2f}" if (self.end_time is not None and self.end_time > 0) else f"{file_duration_sec:.2f}"
+                            start_val = self.start_time if (self.start_time is not None and self.start_time > 0) else 0
+                            end_val = self.end_time if (self.end_time is not None and self.end_time > 0) else file_duration_sec
+                            duration_str = f"{end_val - start_val:.2f}"
+                            print(f"Playback range: {start_str}s - {end_str}s (duration: {duration_str}s)")
+                        
                         # 自動リピートを無効化（重要：これがないとループ再生される）
                         self.playback.set_real_time(False)
                 except Exception as e:
@@ -113,12 +156,56 @@ class BagFileReader:
             if not color_frame or not depth_frame:
                 return None, None
 
-            # 最初のフレームで開始タイムスタンプを記録
+            # 最初のフレームで開始タイムスタンプを記録（手動シーク前）
             is_first_frame = (self.start_timestamp is None)
             if is_first_frame:
                 self.start_timestamp = color_frame.get_timestamp()
+                # 手動シークの場合は、この時点ではplayback_start_timeを設定しない
+                if not self._manual_seek:
+                    self.playback_start_time = self.start_timestamp
+
+            # 手動シーク処理（seek()が使えない場合、start_time > 0の場合のみ）
+            if self._manual_seek and self.start_time is not None and self.start_time > 0:
+                current_timestamp = color_frame.get_timestamp()
+                
+                # タイムスタンプがミリ秒単位か秒単位かを判定
+                timestamp_diff = current_timestamp - self.start_timestamp
+                if self.start_timestamp > 1000000000:  # ミリ秒単位と判定
+                    elapsed_seconds = timestamp_diff / 1000.0
+                else:
+                    elapsed_seconds = timestamp_diff
+                
+                # デバッグ: 最初の数フレームのみログ出力
+                if self._skipped_frames_for_seek < 5 or (self._skipped_frames_for_seek % 30 == 0):
+                    print(f"  Frame {self._skipped_frames_for_seek}: elapsed={elapsed_seconds:.2f}s, target={self.start_time:.2f}s")
+                
+                # 開始時間に達するまでフレームをスキップ
+                if elapsed_seconds < self.start_time:
+                    self._skipped_frames_for_seek += 1
+                    # 次のフレームを取得（再帰的に呼び出し）
+                    return self.get_frames()
+                else:
+                    # 開始時間に達したので、手動シークを終了
+                    self._manual_seek = False
+                    self.playback_start_time = current_timestamp  # 再生開始時刻を更新
+                    print(f"  Manually seeked to {elapsed_seconds:.2f} seconds (skipped {self._skipped_frames_for_seek} frames)")
 
             current_timestamp = color_frame.get_timestamp()
+            
+            # 終了時間のチェック（開始時間からの経過時間で計算、end_time > 0の場合のみ）
+            if self.end_time is not None and self.end_time > 0 and self.playback_start_time is not None:
+                # タイムスタンプがミリ秒単位か秒単位かを判定
+                timestamp_diff = current_timestamp - self.playback_start_time
+                if self.playback_start_time > 1000000000:  # ミリ秒単位と判定
+                    elapsed_seconds = timestamp_diff / 1000.0
+                else:
+                    elapsed_seconds = timestamp_diff
+                
+                # 終了時間を超過した場合は終了
+                start_val = self.start_time if (self.start_time is not None and self.start_time > 0) else 0
+                playback_duration = self.end_time - start_val
+                if elapsed_seconds >= playback_duration - 0.05:  # 50msのマージン
+                    return None, None
             
             # プレイバック位置をチェックして終端検出
             if not is_first_frame and self.playback and self.file_duration:
@@ -127,8 +214,11 @@ class BagFileReader:
                     duration_sec = self.file_duration.total_seconds()
                     position_sec = position.total_seconds()
                     
+                    # 終了時間が指定されている場合は、それを使用（0はNoneとして扱う）
+                    max_position = self.end_time if (self.end_time is not None and self.end_time > 0) else duration_sec
+                    
                     # 終端に達した場合は即座に終了
-                    if position_sec >= duration_sec - 0.05:  # 50msのマージン
+                    if position_sec >= max_position - 0.05:  # 50msのマージン
                         return None, None
                 except Exception as e:
                     # 位置取得に失敗した場合も続行（エラーを無視）

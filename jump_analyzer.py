@@ -13,8 +13,41 @@ import sys
 import time
 from pathlib import Path
 
+try:
+    import toml
+    TOML_AVAILABLE = True
+except ImportError:
+    TOML_AVAILABLE = False
+
 import cv2
 import numpy as np
+import matplotlib
+matplotlib.use('Agg')  # GUI不要のバックエンドを使用
+import matplotlib.pyplot as plt
+import matplotlib.font_manager as fm
+
+# 日本語フォントの設定を試行
+try:
+    # よく使われる日本語フォントを探す
+    jp_fonts = ['Noto Sans CJK JP', 'TakaoGothic', 'IPAexGothic', 'IPAPGothic', 'VL PGothic', 'Yu Gothic']
+    for font_name in jp_fonts:
+        try:
+            font = fm.findfont(fm.FontProperties(family=font_name))
+            if font and 'DejaVu' not in font:  # デフォルトフォント以外が見つかった場合
+                plt.rcParams['font.family'] = font_name
+                break
+        except:
+            continue
+    # フォントが見つからない場合は、英語ラベルを使用する設定にする
+    current_font = plt.rcParams.get('font.family', ['DejaVu Sans'])
+    if isinstance(current_font, list):
+        current_font = current_font[0] if current_font else 'DejaVu Sans'
+    if 'DejaVu' in current_font:
+        USE_JAPANESE_LABELS = False
+    else:
+        USE_JAPANESE_LABELS = True
+except:
+    USE_JAPANESE_LABELS = False
 
 from src.realsense_utils import BagFileReader, CUPY_AVAILABLE
 from src.yolov8_pose_3d import YOLOv8PoseDetector, COCO_KEYPOINTS
@@ -22,6 +55,7 @@ from src.jump_detector import JumpDetector
 from src.visualizer import JumpVisualizer, create_3d_keypoint_animation
 from src.keypoint_smoother import KeypointSmoother
 from src.kalman_filter_3d import KalmanSmoother
+from src.floor_detector import FloorDetector
 
 # CuPyのインポート（CUDA高速化用）
 if CUPY_AVAILABLE:
@@ -31,7 +65,7 @@ else:
     print("CuPy not available: Using NumPy (CPU mode)")
 
 
-def resize_image_cuda(image, new_width, new_height):
+def resize_image(image, new_width, new_height):
     """
     画像をリサイズ
     
@@ -113,29 +147,35 @@ def save_csv(statistics, trajectory, output_path):
         jumps_path = output_path.replace(".csv", "_jumps.csv")
         with open(jumps_path, "w", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
-            writer.writerow(
-                [
-                    "Jump #",
-                    "Type",
-                    "Height (cm)",
-                    "Distance (cm)",
-                    "Start Frame",
-                    "End Frame",
-                    "Duration (frames)",
-                ]
-            )
+            # 床検出使用時は滞空時間も出力
+            headers = [
+                "Jump #",
+                "Type",
+                "Height (cm)",
+                "Distance (cm)",
+                "Start Frame",
+                "Takeoff Frame",
+                "End Frame",
+                "Duration (frames)",
+            ]
+            if any("air_time" in jump for jump in statistics["jumps"]):
+                headers.append("Air Time (s)")
+            writer.writerow(headers)
+            
             for i, jump in enumerate(statistics["jumps"], 1):
-                writer.writerow(
-                    [
-                        i,
-                        jump["jump_type"],
-                        jump["height"] * 100,
-                        jump["distance"] * 100,
-                        jump["frame_start"],
-                        jump["frame_end"],
-                        jump["frame_end"] - jump["frame_start"],
-                    ]
-                )
+                row = [
+                    i,
+                    jump["jump_type"],
+                    jump["height"] * 100,
+                    jump["distance"] * 100,
+                    jump["frame_start"],
+                    jump.get("frame_takeoff", jump["frame_start"]),
+                    jump["frame_end"],
+                    jump["frame_end"] - jump["frame_start"],
+                ]
+                if "air_time" in jump:
+                    row.append(jump["air_time"])
+                writer.writerow(row)
         print(f"Jumps CSV saved to: {jumps_path}")
 
     # 軌跡データをCSVに保存
@@ -158,6 +198,280 @@ def save_csv(statistics, trajectory, output_path):
         print(f"Trajectory CSV saved to: {trajectory_path}")
 
 
+def plot_keypoint_coordinate_timeline(all_frames_data, output_dir, floor_detector=None):
+    """
+    全キーポイントのX, Y, Z座標を時系列でプロット（3つのグラフを生成）
+    
+    Args:
+        all_frames_data: 全フレームデータのリスト
+        output_dir: 出力ディレクトリ
+        floor_detector: 床検出器（Noneの場合、カメラ座標系のYを使用）
+    """
+    if not all_frames_data:
+        print("Warning: No frame data available for coordinate timeline plot")
+        return
+    
+    # タイムスタンプと各キーポイントのX, Y, Z座標を収集
+    timestamps = []
+    keypoint_x = {kp_name: [] for kp_name in COCO_KEYPOINTS}
+    keypoint_y = {kp_name: [] for kp_name in COCO_KEYPOINTS}
+    keypoint_z = {kp_name: [] for kp_name in COCO_KEYPOINTS}
+    
+    # 最初のタイムスタンプを基準に（秒単位に変換）
+    first_timestamp = None
+    
+    for frame_data in all_frames_data:
+        timestamp = frame_data.get("timestamp")
+        if timestamp is None:
+            continue
+        
+        # 最初のタイムスタンプを記録
+        if first_timestamp is None:
+            first_timestamp = timestamp
+        
+        # 経過時間を計算（ミリ秒か秒かを判定）
+        if first_timestamp > 1000000000:  # ミリ秒単位と判定
+            elapsed_time = (timestamp - first_timestamp) / 1000.0  # 秒に変換
+        else:
+            elapsed_time = timestamp - first_timestamp
+        
+        timestamps.append(elapsed_time)
+        
+        # 各キーポイントのX, Y, Z座標を取得
+        keypoints = frame_data.get("keypoints", {})
+        for kp_name in COCO_KEYPOINTS:
+            kp_data = keypoints.get(kp_name, {})
+            kp_3d = kp_data.get("3d", {})
+            
+            # X座標
+            x = kp_3d.get("x") if kp_3d.get("x") is not None else None
+            keypoint_x[kp_name].append(x)
+            
+            # Y座標（床からの距離が利用可能な場合はそれを使用）
+            if floor_detector and "distance_to_floor" in kp_data and kp_data["distance_to_floor"] is not None:
+                y = kp_data["distance_to_floor"]
+            elif kp_3d.get("y") is not None:
+                y = kp_3d["y"]
+            else:
+                y = None
+            keypoint_y[kp_name].append(y)
+            
+            # Z座標
+            z = kp_3d.get("z") if kp_3d.get("z") is not None else None
+            keypoint_z[kp_name].append(z)
+    
+    if not timestamps:
+        print("Warning: No valid timestamps found for coordinate timeline plot")
+        return
+    
+    # カラーマップを準備（キーポイントごとに異なる色）
+    try:
+        # matplotlib 3.7以降の新しい方法
+        from matplotlib import colormaps
+        colors = colormaps.get_cmap('tab20')
+    except (AttributeError, ImportError):
+        # フォールバック
+        try:
+            colors = plt.get_cmap('tab20')
+        except:
+            # さらにフォールバック（古い方法）
+            from matplotlib import cm
+            colors = cm.get_cmap('tab20')
+    
+    # X座標のグラフ
+    fig, ax = plt.subplots(figsize=(14, 8))
+    for i, kp_name in enumerate(COCO_KEYPOINTS):
+        x_values = keypoint_x[kp_name]
+        valid_data = [(t, x) for t, x in zip(timestamps, x_values) if x is not None]
+        if valid_data:
+            valid_times, valid_x = zip(*valid_data)
+            ax.plot(valid_times, valid_x, 
+                   label=kp_name, color=colors(i), alpha=0.7, linewidth=1.5)
+    if USE_JAPANESE_LABELS:
+        ax.set_xlabel('時間 (秒)', fontsize=12, fontweight='bold')
+        ax.set_ylabel('X座標 (m)', fontsize=12, fontweight='bold')
+        ax.set_title('全キーポイントのX座標（時系列）', fontsize=14, fontweight='bold')
+    else:
+        ax.set_xlabel('Time (seconds)', fontsize=12, fontweight='bold')
+        ax.set_ylabel('X coordinate (m)', fontsize=12, fontweight='bold')
+        ax.set_title('All Keypoints X Coordinate Timeline', fontsize=14, fontweight='bold')
+    ax.grid(True, alpha=0.3, linestyle='--')
+    ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=8, ncol=2)
+    plt.tight_layout()
+    x_path = output_dir / "keypoint_x_timeline.png"
+    plt.savefig(str(x_path), dpi=300, bbox_inches='tight')
+    plt.close()
+    print(f"Keypoint X coordinate timeline plot saved to: {x_path}")
+    
+    # Y座標のグラフ（高さ）
+    fig, ax = plt.subplots(figsize=(14, 8))
+    for i, kp_name in enumerate(COCO_KEYPOINTS):
+        y_values = keypoint_y[kp_name]
+        valid_data = [(t, y) for t, y in zip(timestamps, y_values) if y is not None]
+        if valid_data:
+            valid_times, valid_y = zip(*valid_data)
+            ax.plot(valid_times, valid_y, 
+                   label=kp_name, color=colors(i), alpha=0.7, linewidth=1.5)
+    if USE_JAPANESE_LABELS:
+        ax.set_xlabel('時間 (秒)', fontsize=12, fontweight='bold')
+        if floor_detector:
+            ax.set_ylabel('床からの距離 (m)', fontsize=12, fontweight='bold')
+            ax.set_title('全キーポイントの床からの距離（時系列）', fontsize=14, fontweight='bold')
+        else:
+            ax.set_ylabel('Y座標 (m)', fontsize=12, fontweight='bold')
+            ax.set_title('全キーポイントのY座標（時系列）', fontsize=14, fontweight='bold')
+    else:
+        ax.set_xlabel('Time (seconds)', fontsize=12, fontweight='bold')
+        if floor_detector:
+            ax.set_ylabel('Distance from Floor (m)', fontsize=12, fontweight='bold')
+            ax.set_title('All Keypoints Distance from Floor Timeline', fontsize=14, fontweight='bold')
+        else:
+            ax.set_ylabel('Y coordinate (m)', fontsize=12, fontweight='bold')
+            ax.set_title('All Keypoints Y Coordinate Timeline', fontsize=14, fontweight='bold')
+    ax.grid(True, alpha=0.3, linestyle='--')
+    ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=8, ncol=2)
+    plt.tight_layout()
+    y_path = output_dir / "keypoint_y_timeline.png"
+    plt.savefig(str(y_path), dpi=300, bbox_inches='tight')
+    plt.close()
+    print(f"Keypoint Y coordinate timeline plot saved to: {y_path}")
+    
+    # Z座標のグラフ
+    fig, ax = plt.subplots(figsize=(14, 8))
+    for i, kp_name in enumerate(COCO_KEYPOINTS):
+        z_values = keypoint_z[kp_name]
+        valid_data = [(t, z) for t, z in zip(timestamps, z_values) if z is not None]
+        if valid_data:
+            valid_times, valid_z = zip(*valid_data)
+            ax.plot(valid_times, valid_z, 
+                   label=kp_name, color=colors(i), alpha=0.7, linewidth=1.5)
+    if USE_JAPANESE_LABELS:
+        ax.set_xlabel('時間 (秒)', fontsize=12, fontweight='bold')
+        ax.set_ylabel('Z座標 (m)', fontsize=12, fontweight='bold')
+        ax.set_title('全キーポイントのZ座標（時系列）', fontsize=14, fontweight='bold')
+    else:
+        ax.set_xlabel('Time (seconds)', fontsize=12, fontweight='bold')
+        ax.set_ylabel('Z coordinate (m)', fontsize=12, fontweight='bold')
+        ax.set_title('All Keypoints Z Coordinate Timeline', fontsize=14, fontweight='bold')
+    ax.grid(True, alpha=0.3, linestyle='--')
+    ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=8, ncol=2)
+    plt.tight_layout()
+    z_path = output_dir / "keypoint_z_timeline.png"
+    plt.savefig(str(z_path), dpi=300, bbox_inches='tight')
+    plt.close()
+    print(f"Keypoint Z coordinate timeline plot saved to: {z_path}")
+
+
+def load_config(config_path):
+    """
+    設定ファイルを読み込む
+    
+    Args:
+        config_path: 設定ファイルのパス（TOML形式）
+    
+    Returns:
+        dict: 設定辞書、読み込み失敗時はNone
+    """
+    if not TOML_AVAILABLE:
+        print("Warning: toml not installed. Install with: pip install toml")
+        return None
+    
+    config_file = Path(config_path)
+    if not config_file.exists():
+        return None
+    
+    try:
+        with open(config_file, 'r', encoding='utf-8') as f:
+            config = toml.load(f)
+        return config
+    except Exception as e:
+        print(f"Warning: Failed to load config file {config_path}: {e}")
+        return None
+
+
+def merge_config_with_args(config, args):
+    """
+    設定ファイルの値をコマンドライン引数で上書き
+    
+    Args:
+        config: 設定ファイルの辞書
+        args: argparse.Namespaceオブジェクト
+    
+    Returns:
+        argparse.Namespace: マージされた引数オブジェクト
+    """
+    if config is None:
+        return args
+    
+    # 設定ファイルの値をデフォルトとして使用（コマンドライン引数が指定されていない場合）
+    config_to_args_map = {
+        'input': 'input',
+        'output': 'output',
+        'model_dir': 'model_dir',
+        'model_name': 'model_name',
+        'threshold_vertical': 'threshold_vertical',
+        'threshold_horizontal': 'threshold_horizontal',
+        'min_jump_height': 'min_jump_height',
+        'min_air_time': 'min_air_time',
+        'no_video': 'no_video',
+        'no_3d_animation': 'no_3d_animation',
+        'interactive_3d': 'interactive_3d',
+        'smooth_keypoints': 'smooth_keypoints',
+        'smooth_window_size': 'smooth_window_size',
+        'no_depth_interpolation': 'no_depth_interpolation',
+        'depth_kernel_size': 'depth_kernel_size',
+        'use_kalman_filter': 'use_kalman_filter',
+        'kalman_process_noise': 'kalman_process_noise',
+        'kalman_measurement_noise': 'kalman_measurement_noise',
+        'no_floor_detection': 'no_floor_detection',
+        'start_time': 'start_time',
+        'end_time': 'end_time',
+        'frame_skip': 'frame_skip',
+        'resize_factor': 'resize_factor',
+        'minimal_data': 'minimal_data',
+    }
+    
+    for config_key, arg_name in config_to_args_map.items():
+        if config_key in config and config[config_key] is not None:
+            # コマンドライン引数が指定されていない（デフォルト値）場合のみ設定ファイルの値を使用
+            # argparseでは、明示的に指定された引数とデフォルト値を区別するのが難しいため、
+            # 設定ファイルの値が存在し、かつコマンドライン引数の値がNoneまたはデフォルト値の場合は上書き
+            current_value = getattr(args, arg_name, None)
+            
+            # smooth_keypointsは特別扱い（設定ファイルではboolean、コマンドラインではwindow_size）
+            if config_key == 'smooth_keypoints':
+                if isinstance(config[config_key], bool):
+                    # 設定ファイルでbooleanの場合は、window_sizeを設定
+                    if config[config_key]:
+                        # smooth_window_sizeが設定されていればそれを使用、なければデフォルト
+                        window_size = config.get('smooth_window_size', 5)
+                        setattr(args, 'smooth_keypoints', window_size)
+                    else:
+                        setattr(args, 'smooth_keypoints', 0)
+                else:
+                    # 既に整数値の場合はそのまま使用
+                    setattr(args, arg_name, config[config_key])
+            # start_timeとend_time: 0はNoneとして扱う（最初から/最後まで）
+            elif config_key in ['start_time', 'end_time']:
+                if config[config_key] == 0:
+                    setattr(args, arg_name, None)
+                else:
+                    setattr(args, arg_name, config[config_key])
+            # ブール値の場合は、設定ファイルの値を優先（明示的にFalseでも有効）
+            elif config_key in ['no_video', 'no_3d_animation', 'interactive_3d', 
+                             'no_depth_interpolation', 'use_kalman_filter', 'no_floor_detection', 'minimal_data']:
+                setattr(args, arg_name, config[config_key])
+            # Noneがデフォルトの値
+            elif current_value is None and config[config_key] is not None:
+                setattr(args, arg_name, config[config_key])
+            # その他の値は、デフォルト値の可能性がある場合に上書き
+            # （簡単のため、設定ファイルの値で上書き。明示的に指定したい場合はコマンドライン引数を使用）
+            elif current_value is None or (isinstance(current_value, (int, float)) and current_value == getattr(argparse.Namespace(), arg_name, None)):
+                setattr(args, arg_name, config[config_key])
+    
+    return args
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Jump Analyzer: Analyze jump height, distance, and trajectory from RealSense .bag file",
@@ -167,6 +481,13 @@ Examples:
   # Basic analysis
   python jump_analyzer.py --input bagdata/my_recording.bag --output results/
 
+  # Use config file
+  python jump_analyzer.py --config config.toml
+  python jump_analyzer.py --config config.toml --input other_file.bag  # Override input from config
+
+  # Analyze specific time range (seconds)
+  python jump_analyzer.py --input bagdata/my_recording.bag --output results/ --start-time 5.0 --end-time 10.0
+
   # Specify model directory
   python jump_analyzer.py --input bagdata/my_recording.bag --output results/ --model-dir models/
 
@@ -175,10 +496,18 @@ Examples:
         """,
     )
 
-    # 必須引数
-    parser.add_argument("--input", type=str, required=True, help="Input .bag file path")
+    # 設定ファイル
     parser.add_argument(
-        "--output", type=str, required=True, help="Output directory for results"
+        "--config",
+        type=str,
+        default=None,
+        help="Path to config file (TOML format). If specified, config values will be used as defaults (command line args override config)."
+    )
+    
+    # 必須引数（設定ファイルで指定可能なためrequired=False、後でチェック）
+    parser.add_argument("--input", type=str, required=False, default=None, help="Input .bag file path")
+    parser.add_argument(
+        "--output", type=str, required=False, default=None, help="Output directory for results"
     )
 
     # オプション引数
@@ -205,6 +534,18 @@ Examples:
         type=float,
         default=0.1,
         help="Horizontal jump detection threshold in meters (default: 0.1)",
+    )
+    parser.add_argument(
+        "--min-jump-height",
+        type=float,
+        default=0.10,
+        help="Minimum jump height in meters to be considered a valid jump (default: 0.10m = 10cm)",
+    )
+    parser.add_argument(
+        "--min-air-time",
+        type=float,
+        default=0.20,
+        help="Minimum air time in seconds to be considered a valid jump (default: 0.20s = 200ms)",
     )
     parser.add_argument(
         "--no-video", action="store_true", help="Skip video visualization output"
@@ -255,6 +596,23 @@ Examples:
         default=0.1,
         help="Kalman filter measurement noise (default: 0.1, larger = more trust in predictions)",
     )
+    parser.add_argument(
+        "--no-floor-detection",
+        action="store_true",
+        help="Disable floor detection (use traditional height-based detection)",
+    )
+    parser.add_argument(
+        "--start-time",
+        type=float,
+        default=None,
+        help="Start time for playback in seconds (default: start from beginning)",
+    )
+    parser.add_argument(
+        "--end-time",
+        type=float,
+        default=None,
+        help="End time for playback in seconds (default: play until end)",
+    )
 
     # 高速化オプション
     parser.add_argument(
@@ -276,6 +634,29 @@ Examples:
     )
 
     args = parser.parse_args()
+    
+    # 設定ファイルを読み込む
+    config = None
+    if args.config:
+        config = load_config(args.config)
+        if config:
+            print(f"Loaded config from: {args.config}")
+            # 設定ファイルの値をマージ（コマンドライン引数が優先）
+            args = merge_config_with_args(config, args)
+    elif Path("config.toml").exists():
+        # デフォルトで config.toml を探す
+        config = load_config("config.toml")
+        if config:
+            print("Loaded config from: config.toml")
+            args = merge_config_with_args(config, args)
+    
+    # 必須引数のチェック（設定ファイルでも指定可能）
+    if args.input is None:
+        print("Error: --input is required (can be specified in config file or command line)", file=sys.stderr)
+        sys.exit(1)
+    if args.output is None:
+        print("Error: --output is required (can be specified in config file or command line)", file=sys.stderr)
+        sys.exit(1)
 
     # 出力ディレクトリを作成
     output_dir = Path(args.output)
@@ -306,15 +687,35 @@ Examples:
 
     # バグファイルの読み込み
     print("Loading .bag file...")
-    bag_reader = BagFileReader(args.input)
+    bag_reader = BagFileReader(
+        args.input,
+        start_time=args.start_time,
+        end_time=args.end_time
+    )
     if not bag_reader.initialize():
         print("Error: Failed to load .bag file", file=sys.stderr)
         sys.exit(1)
+
+    # 床検出器の初期化（オプション）
+    floor_detector = None
+    if not args.no_floor_detection:
+        floor_detector = FloorDetector(
+            floor_threshold=0.03,  # 3cm（より緩い閾値で検出しやすく）
+            min_inliers=500,  # より少ない点数で検出可能に
+            max_iterations=500
+        )
+        print("Floor detection enabled: Using foot-floor contact for precise jump detection")
+    else:
+        print("Floor detection disabled: Using traditional height-based detection")
 
     # ジャンプ検出器の初期化
     jump_detector = JumpDetector(
         threshold_vertical=args.threshold_vertical,
         threshold_horizontal=args.threshold_horizontal,
+        min_jump_height=args.min_jump_height,
+        min_air_time=args.min_air_time,
+        floor_detector=floor_detector,
+        use_floor_detection=not args.no_floor_detection
     )
 
     # 可視化器の初期化
@@ -364,6 +765,7 @@ Examples:
     skipped_frame_count = 0
     start_time = time.time()
     last_progress_time = start_time
+    floor_detection_done = False  # 床検出が完了したかどうか
 
     try:
         while True:
@@ -381,6 +783,30 @@ Examples:
                 continue
 
             frame_num += 1
+            
+            # 床検出（最初の数フレームで実行、フレームスキッピング前）
+            if floor_detector and not floor_detection_done:
+                # フレームスキッピングを考慮せず、実際の読み込みフレーム数で判定
+                if frame_num <= 100:  # 最初の100フレームで床検出を試行
+                    # 床検出を試行（毎フレーム試行、成功したら終了）
+                    if floor_detector.detect_floor_from_depth(
+                        depth_frame, bag_reader.depth_scale, bag_reader.depth_intrinsics or bag_reader.intrinsics
+                    ):
+                        floor_plane, floor_normal, floor_height = floor_detector.get_floor_plane()
+                        if floor_plane is not None:
+                            floor_detection_done = True
+                            print(f"\n✓ Floor detected at frame {frame_num}!")
+                            print(f"  Floor height (Y): {floor_height:.3f}m")
+                            print(f"  Floor normal: ({floor_normal[0]:.3f}, {floor_normal[1]:.3f}, {floor_normal[2]:.3f})")
+                elif frame_num > 100:
+                    # 100フレーム試しても検出できない場合は警告し、従来方式に切り替え
+                    print("\n⚠ Warning: Floor detection failed after 100 frames.")
+                    print("  Continuing with traditional height-based detection.")
+                    floor_detection_done = True
+                    # 床検出を無効化
+                    if jump_detector:
+                        jump_detector.use_floor_detection = False
+                    floor_detector = None
 
             # フレームスキッピング
             if frame_num % args.frame_skip != 0:
@@ -398,7 +824,7 @@ Examples:
             if args.resize_factor < 1.0:
                 new_width = int(color_image.shape[1] * args.resize_factor)
                 new_height = int(color_image.shape[0] * args.resize_factor)
-                inference_image = resize_image_cuda(color_image, new_width, new_height)
+                inference_image = resize_image(color_image, new_width, new_height)
                 resize_scale_x = color_image.shape[1] / new_width
                 resize_scale_y = color_image.shape[0] / new_height
 
@@ -495,11 +921,24 @@ Examples:
             )
 
             if should_save:
+                # キーポイントの辞書を作成
+                keypoints_dict = convert_keypoints_to_dict(keypoints_2d, keypoints_3d)
+                
+                # 床からの距離をすべてのキーポイントについて追加（床検出が有効な場合）
+                if floor_detector and floor_detector.floor_plane is not None:
+                    for kp_name, kp_data in keypoints_dict.items():
+                        if kp_data.get("3d") and kp_data["3d"]["x"] is not None:
+                            kp_coords = (kp_data["3d"]["x"], kp_data["3d"]["y"], kp_data["3d"]["z"])
+                            distance = floor_detector.distance_to_floor(kp_coords)
+                            kp_data["distance_to_floor"] = distance
+                        else:
+                            kp_data["distance_to_floor"] = None
+                
                 frame_data = {
                     "frame": frame_num,
                     "processed_frame": processed_frame_count,
                     "timestamp": timestamp,
-                    "keypoints": convert_keypoints_to_dict(keypoints_2d, keypoints_3d),
+                    "keypoints": keypoints_dict,
                 }
 
                 if jump_result:
@@ -579,12 +1018,138 @@ Examples:
         print(f"Max distance: {statistics['max_distance'] * 100:.1f} cm")
         print(f"Average height: {statistics['avg_height'] * 100:.1f} cm")
         print(f"Average distance: {statistics['avg_distance'] * 100:.1f} cm")
+        if statistics.get('max_air_time', 0) > 0:
+            print(f"Max air time: {statistics['max_air_time'] * 1000:.1f} ms ({statistics['max_air_time']:.3f} s)")
+        if statistics.get('avg_air_time', 0) > 0:
+            print(f"Average air time: {statistics.get('avg_air_time', 0) * 1000:.1f} ms ({statistics.get('avg_air_time', 0):.3f} s)")
         print()
+        
+        # 検出されたジャンプの詳細情報を表示
+        if statistics.get("jumps"):
+            print("=" * 60)
+            print("Detected Jump Details:")
+            print("=" * 60)
+            for i, jump in enumerate(statistics["jumps"], 1):
+                print(f"\nJump #{i}:")
+                print(f"  Type: {jump['jump_type']}")
+                print(f"  Height: {jump['height'] * 100:.1f} cm")
+                print(f"  Distance: {jump['distance'] * 100:.1f} cm")
+                if jump.get('air_time'):
+                    print(f"  Air time: {jump['air_time'] * 1000:.1f} ms ({jump['air_time']:.3f} s)")
+                print(f"  Frames: {jump.get('frame_start', 'N/A')} → {jump.get('frame_takeoff', 'N/A')} → {jump.get('frame_end', 'N/A')}")
+                if jump.get('start_position') and jump.get('end_position'):
+                    start_pos = jump['start_position']
+                    end_pos = jump['end_position']
+                    if start_pos and end_pos and len(start_pos) >= 2 and len(end_pos) >= 2:
+                        # XZ平面での距離を計算
+                        x_diff = end_pos[0] - start_pos[0]
+                        z_diff = end_pos[2] - start_pos[2] if len(end_pos) > 2 and len(start_pos) > 2 else 0
+                        actual_distance = np.sqrt(x_diff**2 + z_diff**2) * 100
+                        print(f"  Start position: ({start_pos[0]:.3f}, {start_pos[1]:.3f}, {start_pos[2] if len(start_pos) > 2 else 'N/A'})")
+                        print(f"  End position: ({end_pos[0]:.3f}, {end_pos[1]:.3f}, {end_pos[2] if len(end_pos) > 2 else 'N/A'})")
+                        print(f"  Actual XZ distance: {actual_distance:.1f} cm")
+                print(f"  Reported distance: {jump['distance'] * 100:.1f} cm")
+            print("=" * 60)
+            print()
+        
+        # キーポイント変動性分析（床検出が有効な場合）
+        if floor_detector and not args.no_floor_detection:
+            print("=" * 60)
+            print("キーポイント変動性分析")
+            print("=" * 60)
+            
+            # 最もジャンプ検出に敏感なキーポイントを特定
+            sensitive_keypoints = jump_detector.get_most_jump_sensitive_keypoints(min_samples=10, top_n=10)
+            
+            if sensitive_keypoints:
+                print("\nジャンプ検出に最も敏感なキーポイント（歩行時との違いが明確な順）:")
+                print(f"{'キーポイント':<15} {'歩行時SD':<10} {'ジャンプ時SD':<12} {'変動比':<10} "
+                      f"{'検出感度':<10} {'最大変位(m)':<12} {'サンプル数':<10}")
+                print("-" * 95)
+                for kp_name, stats in sensitive_keypoints:
+                    walking_std_str = f"{stats['walking_std']:.3f}" if stats['walking_std'] is not None else "N/A"
+                    jumping_std_str = f"{stats['jumping_std']:.3f}" if stats['jumping_std'] is not None else "N/A"
+                    ratio_str = f"{stats['jump_walk_ratio']:.2f}" if stats['jump_walk_ratio'] is not None else "N/A"
+                    sensitivity_str = f"{stats['jump_sensitivity']:.3f}" if stats['jump_sensitivity'] is not None else "N/A"
+                    
+                    print(f"{kp_name:<15} {walking_std_str:<10} {jumping_std_str:<12} {ratio_str:<10} "
+                          f"{sensitivity_str:<10} {stats['range']:<12.3f} "
+                          f"({stats['walking_samples']}/{stats['jumping_samples']})")
+                
+                # CSV出力
+                import csv
+                variability_csv_path = output_dir / "keypoint_variability.csv"
+                with open(variability_csv_path, 'w', newline='', encoding='utf-8') as f:
+                    writer = csv.writer(f)
+                    writer.writerow([
+                        'Keypoint', 'Mean (m)', 'Std (m)', 'Min (m)', 'Max (m)', 
+                        'Range (m)', 'CV', 'Valid Samples',
+                        'Walking Mean (m)', 'Walking Std (m)', 'Walking Samples',
+                        'Jumping Mean (m)', 'Jumping Std (m)', 'Jumping Samples',
+                        'Jump/Walk Ratio', 'Jump Sensitivity'
+                    ])
+                    all_stats = jump_detector.analyze_keypoint_variability()
+                    for kp_name in sorted(all_stats.keys()):
+                        stats = all_stats[kp_name]
+                        writer.writerow([
+                            kp_name,
+                            f"{stats['mean']:.4f}",
+                            f"{stats['std']:.4f}",
+                            f"{stats['min']:.4f}",
+                            f"{stats['max']:.4f}",
+                            f"{stats['range']:.4f}",
+                            f"{stats['cv']:.4f}",
+                            stats['valid_samples'],
+                            f"{stats['walking_mean']:.4f}" if stats['walking_mean'] is not None else "",
+                            f"{stats['walking_std']:.4f}" if stats['walking_std'] is not None else "",
+                            stats['walking_samples'],
+                            f"{stats['jumping_mean']:.4f}" if stats['jumping_mean'] is not None else "",
+                            f"{stats['jumping_std']:.4f}" if stats['jumping_std'] is not None else "",
+                            stats['jumping_samples'],
+                            f"{stats['jump_walk_ratio']:.4f}" if stats['jump_walk_ratio'] is not None else "",
+                            f"{stats['jump_sensitivity']:.4f}"
+                        ])
+                print(f"\nキーポイント変動性CSV saved to: {variability_csv_path}")
+                
+                # ジャンプ遷移分析（始まりと終わりを捉えるキーポイント）
+                print("=" * 60)
+                print("ジャンプ遷移分析（始まりと終わりを捉えるキーポイント）")
+                print("=" * 60)
+                
+                transitions = jump_detector.analyze_jump_transitions()
+                
+                if transitions['takeoff_keypoints']:
+                    print("\n【離陸（ジャンプ開始）時に急激に変化するキーポイント】:")
+                    print(f"{'キーポイント':<15} {'平均変化量(m)':<15} {'標準偏差(m)':<15} {'スコア':<12} {'サンプル数':<10}")
+                    print("-" * 75)
+                    for kp_name, stats in transitions['takeoff_keypoints'][:10]:
+                        print(f"{kp_name:<15} {stats['avg_change']:<15.4f} {stats['std_change']:<15.4f} "
+                              f"{stats['score']:<12.2f} {stats['samples']:<10}")
+                else:
+                    print("\n【離陸時の分析】: データが不足しています")
+                
+                if transitions['landing_keypoints']:
+                    print("\n【着地（ジャンプ終了）時に急激に変化するキーポイント】:")
+                    print(f"{'キーポイント':<15} {'平均変化量(m)':<15} {'標準偏差(m)':<15} {'スコア':<12} {'サンプル数':<10}")
+                    print("-" * 75)
+                    for kp_name, stats in transitions['landing_keypoints'][:10]:
+                        print(f"{kp_name:<15} {stats['avg_change']:<15.4f} {stats['std_change']:<15.4f} "
+                              f"{stats['score']:<12.2f} {stats['samples']:<10}")
+                else:
+                    print("\n【着地時の分析】: データが不足しています")
+                
+                print()
+            else:
+                print("キーポイント変動性分析: 十分なデータがありません")
+            print()
 
         # JSONファイルに保存
         json_output = {"frames": all_frames_data, "statistics": statistics}
         json_path = output_dir / "keypoints_3d.json"
         save_json(json_output, str(json_path))
+        
+        # キーポイントのX, Y, Z座標時系列グラフを作成
+        plot_keypoint_coordinate_timeline(all_frames_data, output_dir, floor_detector)
 
         # CSVファイルに保存
         csv_path = output_dir / "jump_statistics.csv"
