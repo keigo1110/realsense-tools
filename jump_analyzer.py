@@ -955,17 +955,12 @@ Examples:
 
             # 可視化フレームを生成
             if not args.no_video:
-                skeleton_image = yolo_pose.draw_skeleton(
-                    color_image if args.resize_factor >= 1.0 else color_image.copy(),
-                    keypoints_2d
-                )
-
                 # 統計情報を取得
                 statistics = jump_detector.get_statistics()
 
-                # 可視化フレームを生成
+                # 可視化フレームを生成（キーポイントとスケルトンのみ）
                 vis_frame = visualizer.draw_frame(
-                    skeleton_image, keypoints_2d, jump_result, statistics
+                    color_image, keypoints_2d, jump_result, statistics
                 )
 
                 # 動画ライターを初期化
@@ -1163,12 +1158,16 @@ Examples:
         # 3Dキーポイントアニメーションを生成
         if not args.no_3d_animation:
             print("\nGenerating 3D keypoint animation...")
+            animation_path = output_dir / "keypoints_3d_animation.gif"
             if args.interactive_3d:
-                # インタラクティブモードで表示
-                create_3d_keypoint_animation(str(json_path), output_path=None, fps=30, interactive=True)
+                # インタラクティブモードで表示 + ファイルも保存
+                if create_3d_keypoint_animation(str(json_path), str(animation_path), fps=30, interactive=True):
+                    if Path(animation_path).exists():
+                        print(f"3D keypoint animation saved to: {animation_path}")
+                else:
+                    print("Warning: Failed to create 3D keypoint animation")
             else:
                 # ファイルとして保存
-                animation_path = output_dir / "keypoints_3d_animation.gif"
                 if create_3d_keypoint_animation(str(json_path), str(animation_path), fps=30, interactive=False):
                     print(f"3D keypoint animation saved to: {animation_path}")
                 else:

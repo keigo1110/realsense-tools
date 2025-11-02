@@ -40,106 +40,54 @@ class JumpVisualizer:
 
     def draw_frame(self, image, keypoints_2d, jump_result=None, statistics=None):
         """
-        可視化フレームを生成
+        可視化フレームを生成（キーポイントとスケルトンのみ）
 
         Args:
             image: 元の画像
             keypoints_2d: 2D keypointsのリスト [(x, y, confidence), ...]
-            jump_result: ジャンプ検出結果（辞書）
-            statistics: 統計情報（辞書）
+            jump_result: ジャンプ検出結果（辞書、使用しない）
+            statistics: 統計情報（辞書、使用しない）
 
         Returns:
             numpy.ndarray: 可視化済み画像
         """
         vis_image = image.copy()
+        
+        if not keypoints_2d:
+            return vis_image
 
-        # keypointsを描画（簡易版 - スケルトン描画はopenpose_3d.pyで行う）
-        if keypoints_2d:
-            for i, (x, y, conf) in enumerate(keypoints_2d):
-                if conf > 0.1 and x is not None and y is not None:
-                    cv2.circle(vis_image, (int(x), int(y)), 4, (0, 0, 255), -1)
+        # COCO_PAIRSのインポート（スケルトン描画用）
+        try:
+            from .yolov8_pose_3d import COCO_PAIRS
+        except ImportError:
+            from src.yolov8_pose_3d import COCO_PAIRS
 
-        # ジャンプ結果の情報を表示
-        if jump_result:
-            # 状態を表示
-            state = jump_result.get("state", "unknown")
-            state_colors = {
-                "ground": (0, 255, 0),
-                "jumping": (0, 165, 255),
-                "jump_start": (255, 0, 0),
-                "jump_end": (255, 0, 255)
-            }
-            state_color = state_colors.get(state, (255, 255, 255))
+        # スケルトンの線を描画
+        threshold = 0.1
+        for pair in COCO_PAIRS:
+            idx1, idx2 = pair[0], pair[1]
+            if idx1 < len(keypoints_2d) and idx2 < len(keypoints_2d):
+                kp1 = keypoints_2d[idx1]
+                kp2 = keypoints_2d[idx2]
 
-            # 背景を描画（可読性向上）
-            cv2.rectangle(vis_image, (10, 10), (400, 150), (0, 0, 0), -1)
-            cv2.rectangle(vis_image, (10, 10), (400, 150), state_color, 2)
+                if (
+                    kp1[0] is not None
+                    and kp1[1] is not None
+                    and kp2[0] is not None
+                    and kp2[1] is not None
+                    and kp1[2] > threshold
+                    and kp2[2] > threshold
+                ):
+                    pt1 = (int(kp1[0]), int(kp1[1]))
+                    pt2 = (int(kp2[0]), int(kp2[1]))
+                    cv2.line(vis_image, pt1, pt2, (0, 255, 0), 2)
 
-            # テキストを描画
-            y_offset = 30
-            cv2.putText(vis_image, f"State: {state.upper()}", (20, y_offset),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, state_color, 2)
-
-            y_offset += 25
-            if jump_result.get("height") is not None:
-                height_m = jump_result["height"]
-                height_cm = height_m * 100
-                cv2.putText(vis_image, f"Height: {height_cm:.1f} cm", (20, y_offset),
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-
-            y_offset += 25
-            if jump_result.get("jump_height") is not None and jump_result["jump_height"] > 0:
-                jump_height_cm = jump_result["jump_height"] * 100
-                cv2.putText(vis_image, f"Jump Height: {jump_height_cm:.1f} cm", (20, y_offset),
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
-
-            y_offset += 25
-            if jump_result.get("jump_distance") is not None and jump_result["jump_distance"] > 0:
-                jump_distance_cm = jump_result["jump_distance"] * 100
-                cv2.putText(vis_image, f"Jump Distance: {jump_distance_cm:.1f} cm", (20, y_offset),
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
-
-            y_offset += 25
-            if jump_result.get("jump_type"):
-                jump_type = jump_result["jump_type"].upper()
-                cv2.putText(vis_image, f"Type: {jump_type}", (20, y_offset),
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 165, 0), 2)
-
-        # 統計情報を表示
-        if statistics:
-            stats_y = vis_image.shape[0] - 120
-            cv2.rectangle(vis_image, (10, stats_y), (350, vis_image.shape[0] - 10), (0, 0, 0), -1)
-
-            y_offset = stats_y + 25
-            cv2.putText(vis_image, f"Total Jumps: {statistics.get('total_jumps', 0)}", (20, y_offset),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
-
-            y_offset += 20
-            if statistics.get("max_height", 0) > 0:
-                max_height_cm = statistics["max_height"] * 100
-                cv2.putText(vis_image, f"Max Height: {max_height_cm:.1f} cm", (20, y_offset),
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
-
-            y_offset += 20
-            if statistics.get("max_distance", 0) > 0:
-                max_distance_cm = statistics["max_distance"] * 100
-                cv2.putText(vis_image, f"Max Distance: {max_distance_cm:.1f} cm", (20, y_offset),
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
-
-        # 軌跡を描画
-        if jump_result and jump_result.get("position"):
-            pos = jump_result["position"]
-            if pos[0] is not None and pos[1] is not None:
-                self.trajectory_points.append((int(pos[0]), int(pos[1])))
-
-        # 軌跡を線で描画
-        if len(self.trajectory_points) > 1:
-            points = list(self.trajectory_points)
-            for i in range(1, len(points)):
-                # 色を徐々に変化（新しい点ほど明るい）
-                alpha = i / len(points)
-                color = (int(255 * alpha), int(255 * (1 - alpha)), 128)
-                cv2.line(vis_image, points[i-1], points[i], color, 2)
+        # keypointsを描画
+        for i, (x, y, conf) in enumerate(keypoints_2d):
+            if conf > threshold and x is not None and y is not None:
+                pt = (int(x), int(y))
+                cv2.circle(vis_image, pt, 5, (0, 0, 255), -1)
+                cv2.circle(vis_image, pt, 3, (255, 255, 255), -1)
 
         return vis_image
 
@@ -404,6 +352,7 @@ def create_3d_keypoint_animation(json_path, output_path=None, fps=30, keypoint_n
         )
 
         # インタラクティブモードの場合
+        interactive_displayed = False
         if interactive or output_path is None:
             # インタラクティブ表示を試行
             try:
@@ -428,30 +377,32 @@ def create_3d_keypoint_animation(json_path, output_path=None, fps=30, keypoint_n
                     if original_backend:
                         matplotlib.use(original_backend, force=True)
                     
-                    return True
+                    interactive_displayed = True
                 else:
                     if not has_display:
                         print("Warning: No display available (DISPLAY not set). Saving animation as file instead...")
                     else:
                         print("Warning: Interactive backend not available. Saving animation as file instead...")
-                    interactive = False
             except Exception as e:
                 print(f"Warning: Interactive display not available ({e})")
                 print("  Saving animation as file instead...")
-                interactive = False
                 if original_backend:
                     matplotlib.use(original_backend, force=True)
 
-        # ファイルとして保存
+        # ファイルとして保存（インタラクティブ表示後も保存する）
+        # output_pathがNoneの場合は、JSONファイルと同じディレクトリに自動生成
         if output_path is None:
             if json_path and Path(json_path).exists():
                 output_path = str(Path(json_path).parent / "keypoints_3d_animation.gif")
             else:
+                # インタラクティブ表示が成功した場合は、ファイル保存をスキップしてもOK
+                if interactive_displayed:
+                    return True
                 print("Warning: No output path specified and json_path not available. Skipping 3D animation file save.")
                 return False
-        else:
-            # output_pathが指定されている場合は、パスを文字列に変換
-            output_path = str(output_path)
+        
+        # output_pathが指定されている場合は、パスを文字列に変換
+        output_path = str(output_path)
         
         print(f"Creating 3D keypoint animation ({len(keypoints_3d_list)} frames)...")
         
