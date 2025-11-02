@@ -16,10 +16,12 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from realsense_utils import BagFileReader, CUPY_AVAILABLE
-from yolov8_pose_3d import YOLOv8PoseDetector, COCO_KEYPOINTS
-from jump_detector import JumpDetector
-from visualizer import JumpVisualizer
+from src.realsense_utils import BagFileReader, CUPY_AVAILABLE
+from src.yolov8_pose_3d import YOLOv8PoseDetector, COCO_KEYPOINTS
+from src.jump_detector import JumpDetector
+from src.visualizer import JumpVisualizer, create_3d_keypoint_animation
+from src.keypoint_smoother import KeypointSmoother
+from src.kalman_filter_3d import KalmanSmoother
 
 # CuPyのインポート（CUDA高速化用）
 if CUPY_AVAILABLE:
@@ -31,7 +33,7 @@ else:
 
 def resize_image_cuda(image, new_width, new_height):
     """
-    画像をリサイズ（CUDA使用可能な場合は高速化）
+    画像をリサイズ
     
     Args:
         image: 入力画像（NumPy配列）
@@ -41,20 +43,7 @@ def resize_image_cuda(image, new_width, new_height):
     Returns:
         リサイズされた画像（NumPy配列）
     """
-    if CUPY_AVAILABLE:
-        try:
-            # CuPyを使用してGPUでリサイズ
-            gpu_image = cp.asarray(image)
-            # CuPyにはresize関数がないため、OpenCV CUDAを使用するかNumPyにフォールバック
-            # ここではNumPyにフォールバック（CuPyでリサイズする場合は別途実装が必要）
-            resized = cv2.resize(image, (new_width, new_height))
-            return resized
-        except Exception:
-            # CUDA処理に失敗した場合はCPUで処理
-            return cv2.resize(image, (new_width, new_height))
-    else:
-        # CPUでリサイズ
-        return cv2.resize(image, (new_width, new_height))
+    return cv2.resize(image, (new_width, new_height))
 
 
 def convert_keypoints_to_dict(keypoints_2d, keypoints_3d):
@@ -220,6 +209,52 @@ Examples:
     parser.add_argument(
         "--no-video", action="store_true", help="Skip video visualization output"
     )
+    parser.add_argument(
+        "--no-3d-animation",
+        action="store_true",
+        help="Skip 3D keypoint animation generation",
+    )
+    parser.add_argument(
+        "--interactive-3d",
+        action="store_true",
+        help="Display interactive 3D keypoint animation (can rotate view with mouse)",
+    )
+    parser.add_argument(
+        "--smooth-keypoints",
+        type=int,
+        default=5,
+        metavar="N",
+        help="Enable keypoint smoothing with window size N (default: 5, set to 0 to disable)",
+    )
+    parser.add_argument(
+        "--no-depth-interpolation",
+        action="store_true",
+        help="Disable depth interpolation (use single pixel depth, faster but less accurate)",
+    )
+    parser.add_argument(
+        "--depth-kernel-size",
+        type=int,
+        default=3,
+        metavar="N",
+        help="Depth interpolation kernel size (default: 3, must be odd, larger = more smoothing)",
+    )
+    parser.add_argument(
+        "--use-kalman-filter",
+        action="store_true",
+        help="Use Kalman filter for temporal smoothing (research-grade, more accurate than moving average)",
+    )
+    parser.add_argument(
+        "--kalman-process-noise",
+        type=float,
+        default=0.01,
+        help="Kalman filter process noise (default: 0.01, smaller = smoother but slower response)",
+    )
+    parser.add_argument(
+        "--kalman-measurement-noise",
+        type=float,
+        default=0.1,
+        help="Kalman filter measurement noise (default: 0.1, larger = more trust in predictions)",
+    )
 
     # 高速化オプション
     parser.add_argument(
@@ -284,6 +319,26 @@ Examples:
 
     # 可視化器の初期化
     visualizer = JumpVisualizer()
+
+    # キーポイント平滑化器の初期化（Kalmanフィルタまたは移動平均）
+    if args.use_kalman_filter:
+        smoother = KalmanSmoother(
+            process_noise=args.kalman_process_noise,
+            measurement_noise=args.kalman_measurement_noise
+        )
+        print(f"Kalman filter smoothing enabled: process_noise={args.kalman_process_noise}, measurement_noise={args.kalman_measurement_noise}")
+    elif args.smooth_keypoints > 0:
+        smoother = KeypointSmoother(window_size=args.smooth_keypoints, smoothing_type='moving_average')
+        print(f"Moving average smoothing enabled: window_size={args.smooth_keypoints}")
+    else:
+        smoother = None
+        print("Keypoint smoothing disabled")
+    
+    # 深度補間の設定を表示
+    if not args.no_depth_interpolation:
+        print(f"Depth interpolation enabled: kernel_size={args.depth_kernel_size}")
+    else:
+        print("Depth interpolation disabled (using single pixel depth)")
 
     # データ保存用のリスト
     all_frames_data = []
@@ -356,7 +411,7 @@ Examples:
             keypoints_2d = yolo_pose.detect_keypoints(inference_image)
             pose_time = time.time() - pose_start
 
-            # keypoints座標を元の画像サイズにスケール（リスト内包表記で高速化）
+            # keypoints座標を元の画像サイズにスケール
             if args.resize_factor < 1.0 and keypoints_2d:
                 keypoints_2d = [
                     (kp[0] * resize_scale_x, kp[1] * resize_scale_y, kp[2])
@@ -371,33 +426,50 @@ Examples:
             # 3D keypointsを計算（バッチ処理で高速化）
             depth_start = time.time()
             
-            # 有効なkeypointsの座標を収集（リスト内包表記で高速化）
+            # 有効なkeypointsの座標を収集
+            # 研究用途: 画像端のキーポイントは信頼度が低い（OpenPoseの手法を参考）
+            image_height, image_width = color_image.shape[:2]
+            border_threshold = 8  # 画像端から8ピクセル以内は除外
+            
             valid_data = [
-                (kp_name, kp_2d[0], kp_2d[1])
+                (kp_name, kp_2d[0], kp_2d[1], kp_2d[2])  # confidenceも含める
                 for kp_name, kp_2d in zip(COCO_KEYPOINTS, keypoints_2d)
-                if kp_2d[0] is not None and kp_2d[1] is not None
+                if (kp_2d[0] is not None and kp_2d[1] is not None
+                    and kp_2d[2] > 0.1  # 信頼度閾値
+                    and border_threshold <= kp_2d[0] < image_width - border_threshold
+                    and border_threshold <= kp_2d[1] < image_height - border_threshold)
             ]
             
-            # バッチ処理で深度値を一括取得
+            # バッチ処理で深度値を一括取得（研究用途向け高精度処理）
+            # 信頼度に基づく適応的補間のため、信頼度も渡す
             if valid_data:
-                valid_points = [(x, y) for _, x, y in valid_data]
-                depths = bag_reader.get_depth_at_points_batch(depth_frame, valid_points)
-                # バッチ処理で3D座標に一括変換
+                valid_points = [(x, y) for _, x, y, _ in valid_data]
+                # キーポイントの信頼度を取得
+                kp_confidences = [conf for _, _, _, conf in valid_data]
+                depths = bag_reader.get_depth_at_points_batch(
+                    depth_frame, 
+                    valid_points,
+                    use_interpolation=not args.no_depth_interpolation,
+                    kernel_size=args.depth_kernel_size if args.depth_kernel_size % 2 == 1 else 3,
+                    confidences=kp_confidences
+                )
                 coords_3d = bag_reader.pixels_to_3d_batch(valid_points, depths)
                 
-                # 結果を辞書に格納（辞書内包表記で高速化）
+                # 結果を辞書に格納
                 valid_coords_dict = {
                     kp_name: coords_3d[i] if coords_3d[i] is not None else (None, None, None)
-                    for i, (kp_name, _, _) in enumerate(valid_data)
+                    for i, (kp_name, _, _, _) in enumerate(valid_data)
                 }
-                # 全keypointsの辞書を作成（有効なものと無効なものを統合）
                 keypoints_3d = {
                     kp_name: valid_coords_dict.get(kp_name, (None, None, None))
                     for kp_name in COCO_KEYPOINTS
                 }
             else:
-                # 有効なkeypointがない場合
                 keypoints_3d = {kp_name: (None, None, None) for kp_name in COCO_KEYPOINTS}
+            
+            # キーポイント平滑化を適用
+            if smoother is not None:
+                keypoints_3d = smoother.smooth(keypoints_3d)
             
             depth_time = time.time() - depth_start
 
@@ -412,19 +484,15 @@ Examples:
 
             # ジャンプ検出
             timestamp = color_frame.get_timestamp()
-            # frame_numではなくprocessed_frame_countを使用（スキップ考慮）
             jump_result = jump_detector.update(
                 processed_frame_count, keypoints_3d, timestamp
             )
 
             # フレームデータを保存（minimal_dataモードではジャンプ検出時のみ）
-            should_save = True
-            if args.minimal_data:
-                should_save = jump_result is not None and jump_result.get("state") in [
-                    "jump_start",
-                    "jump_end",
-                    "jumping",
-                ]
+            should_save = not args.minimal_data or (
+                jump_result is not None 
+                and jump_result.get("state") in ["jump_start", "jump_end", "jumping"]
+            )
 
             if should_save:
                 frame_data = {
@@ -446,9 +514,8 @@ Examples:
 
                 all_frames_data.append(frame_data)
 
-            # 可視化フレームを生成（逐次書き込みでメモリ効率化）
+            # 可視化フレームを生成
             if not args.no_video:
-                # スケルトンを描画（リサイズされていない場合は直接使用）
                 skeleton_image = yolo_pose.draw_skeleton(
                     color_image if args.resize_factor >= 1.0 else color_image.copy(),
                     keypoints_2d
@@ -462,7 +529,7 @@ Examples:
                     skeleton_image, keypoints_2d, jump_result, statistics
                 )
 
-                # 動画ライターを初期化（最初のフレーム時のみ）
+                # 動画ライターを初期化
                 if video_writer is None:
                     video_path = output_dir / "jump_visualization.mp4"
                     height, width = vis_frame.shape[:2]
@@ -472,12 +539,10 @@ Examples:
                     )
                     print(f"Initialized video writer: {video_path}")
 
-                # フレームを即座に書き込み（メモリに保持しない）
                 video_writer.write(vis_frame)
 
-            # 進捗表示（処理速度を含む）
+            # 進捗表示
             current_time = time.time()
-            # 最初のフレーム処理時、または10フレームごと、または5秒ごとに表示
             if (
                 processed_frame_count == 1
                 or processed_frame_count % 10 == 0
@@ -525,10 +590,24 @@ Examples:
         csv_path = output_dir / "jump_statistics.csv"
         save_csv(statistics, trajectory, str(csv_path))
 
-        # 可視化動画を完成（動画ライターをクローズ）
+        # 可視化動画を完成
         if not args.no_video and video_writer is not None:
             video_writer.release()
             print(f"Video saved to: {video_path}")
+
+        # 3Dキーポイントアニメーションを生成
+        if not args.no_3d_animation:
+            print("\nGenerating 3D keypoint animation...")
+            if args.interactive_3d:
+                # インタラクティブモードで表示
+                create_3d_keypoint_animation(str(json_path), output_path=None, fps=30, interactive=True)
+            else:
+                # ファイルとして保存
+                animation_path = output_dir / "keypoints_3d_animation.gif"
+                if create_3d_keypoint_animation(str(json_path), str(animation_path), fps=30, interactive=False):
+                    print(f"3D keypoint animation saved to: {animation_path}")
+                else:
+                    print("Warning: Failed to create 3D keypoint animation")
 
         print("\n" + "=" * 60)
         print("Analysis complete!")

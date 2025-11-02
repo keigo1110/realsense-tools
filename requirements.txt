@@ -1,6 +1,7 @@
 numpy
 opencv-python
 matplotlib
+pillow  # 3Dキーポイントアニメーション（GIF出力）用
 
 # YOLOv8-Pose用
 # 高速で高精度な姿勢推定のため、YOLOv8-Poseを使用

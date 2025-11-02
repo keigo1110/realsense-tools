@@ -258,8 +258,13 @@ class BagFileReader:
         if self.intrinsics is None:
             return None
 
-        # 深度データの内部パラメータを使用（カラーと深度のアライメントを考慮）
-        intrinsics = self.intrinsics
+        # 深度データの内部パラメータを使用
+        # 深度画像のintrinsicsが利用可能な場合はそれを使用（より正確）
+        # そうでない場合はカラー画像のintrinsicsを使用（アライメント後）
+        if self.depth_intrinsics is not None:
+            intrinsics = self.depth_intrinsics
+        else:
+            intrinsics = self.intrinsics
 
         # RealSenseの座標系:
         # X: 右方向
@@ -277,14 +282,22 @@ class BagFileReader:
 
         return (X, Y, Z)
 
-    def get_depth_at_points_batch(self, depth_frame, points):
+    def get_depth_at_points_batch(self, depth_frame, points, use_interpolation=True, kernel_size=3, confidences=None):
         """
         複数のピクセル位置の深度値を一括取得（バッチ処理、高速化）
         CUDA使用可能な場合はGPUで処理
+        
+        研究用途向けの高精度処理:
+        - 空間補間: 周囲ピクセルの中央値を使用（ノイズ低減）
+        - 外れ値除去: 統計的手法による異常値検出
+        - 信頼度ベース適応的補間: キーポイント信頼度に応じて補間範囲を調整
 
         Args:
             depth_frame: RealSense深度フレーム
             points: ピクセル座標のリスト [(x, y), ...]
+            use_interpolation: Trueの場合、周囲ピクセルからの補間を適用（デフォルト: True）
+            kernel_size: 補間カーネルサイズ（奇数推奨、デフォルト: 3）
+            confidences: キーポイントの信頼度リスト（オプション、信頼度に基づく適応的処理用）
 
         Returns:
             list: 深度値のリスト（メートル）、無効な場合はNoneを含む
@@ -295,78 +308,101 @@ class BagFileReader:
         # 深度フレームから深度値を取得
         depth_image = np.asanyarray(depth_frame.get_data())
 
-        # CUDA使用可能な場合は、バッチ処理をベクトル化
-        if CUPY_AVAILABLE and len(points) > 5:
-            try:
-                # CuPyで処理（大量の点がある場合のみ）
-                # NumPy配列を先に作成してからCuPy配列に変換（高速化）
-                points_array = np.array(points, dtype=np.float32)
-                x_coords = cp.asarray(np.round(points_array[:, 0]).astype(np.int32))
-                y_coords = cp.asarray(np.round(points_array[:, 1]).astype(np.int32))
-                
-                # 境界チェック
-                height, width = depth_image.shape
-                valid_mask = (x_coords >= 0) & (x_coords < width) & (y_coords >= 0) & (y_coords < height)
-                
-                # 深度画像をGPUに転送
-                depth_gpu = cp.asarray(depth_image)
-                
-                # 有効な座標のみ処理
-                valid_x = x_coords[valid_mask]
-                valid_y = y_coords[valid_mask]
-                
-                if len(valid_x) > 0:
-                    # GPUで深度値を取得（インデックスアクセス）
-                    depth_values = depth_gpu[valid_y, valid_x]
-                    depth_values = depth_values * self.depth_scale
-                    
-                    # 無効な深度値（0）をマスク
-                    valid_depth_mask = depth_values > 0
-                    
-                    # 結果をCPUに転送
-                    depth_values_cpu = cp.asnumpy(depth_values)
-                    valid_mask_cpu = cp.asnumpy(valid_mask)
-                    valid_depth_mask_cpu = cp.asnumpy(valid_depth_mask)
-                    
-                    # 結果をリストに変換
-                    depths = []
-                    valid_idx = 0
-                    for i, is_valid in enumerate(valid_mask_cpu):
-                        if is_valid:
-                            if valid_depth_mask_cpu[valid_idx]:
-                                depths.append(float(depth_values_cpu[valid_idx]))
-                            else:
-                                depths.append(None)
-                            valid_idx += 1
-                        else:
-                            depths.append(None)
-                    
-                    return depths
-            except Exception:
-                # CUDA処理に失敗した場合はCPUで処理（フォールバック）
-                pass
+        # CUDA使用可能な場合でも、補間処理はCPUで実行（GPU実装は複雑なため）
+        # CPU処理で補間機能を使用（研究用途向け高精度処理）
 
         # CPU処理（フォールバックまたは小規模データ）
         depths = []
-        for x, y in points:
-            x = int(round(x))
-            y = int(round(y))
-
-            if x < 0 or x >= depth_image.shape[1] or y < 0 or y >= depth_image.shape[0]:
-                depths.append(None)
-                continue
-
-            depth_value = depth_image[y, x]
-
-            if depth_value == 0:
-                depths.append(None)
-                continue
-
-            # スケールを適用してメートル単位に変換
-            depth_m = depth_value * self.depth_scale
+        for i, (x, y) in enumerate(points):
+            confidence = confidences[i] if confidences is not None and i < len(confidences) else None
+            depth_m = self._get_depth_with_interpolation(
+                depth_image, x, y, use_interpolation, kernel_size, confidence
+            )
             depths.append(depth_m)
 
         return depths
+    
+    def _get_depth_with_interpolation(self, depth_image, x, y, use_interpolation=True, kernel_size=3, confidence=None):
+        """
+        深度値を取得（補間オプション付き、研究用途向け高精度処理）
+        
+        Args:
+            depth_image: 深度画像（NumPy配列）
+            x: ピクセルX座標（float）
+            y: ピクセルY座標（float）
+            use_interpolation: Trueの場合、周囲ピクセルからの補間を適用
+            kernel_size: 補間カーネルサイズ（奇数推奨）
+            confidence: キーポイントの信頼度（0-1、信頼度が低い場合は補間範囲を拡大）
+        
+        Returns:
+            float: 深度値（メートル）、無効な場合はNone
+        """
+        x_int = int(round(x))
+        y_int = int(round(y))
+        
+        height, width = depth_image.shape
+        
+        if x_int < 0 or x_int >= width or y_int < 0 or y_int >= height:
+            return None
+        
+        if use_interpolation and kernel_size >= 3:
+            # 信頼度が低い場合は補間範囲を拡大（研究手法: 信頼度に基づく適応的補間）
+            if confidence is not None and confidence < 0.5:
+                kernel_size = min(kernel_size + 2, 7)  # 最大7x7
+            
+            # 周囲ピクセルから深度値を補間（ノイズ低減のため中央値を使用）
+            half_kernel = kernel_size // 2
+            x_min = max(0, x_int - half_kernel)
+            x_max = min(width, x_int + half_kernel + 1)
+            y_min = max(0, y_int - half_kernel)
+            y_max = min(height, y_int + half_kernel + 1)
+            
+            # 周囲の深度値を取得
+            neighborhood = depth_image[y_min:y_max, x_min:x_max]
+            valid_depths = neighborhood[neighborhood > 0]  # 無効な深度値（0）を除外
+            
+            if len(valid_depths) == 0:
+                return None
+            
+            # 外れ値除去: IQR（四分位範囲）法を使用
+            if len(valid_depths) >= 5:
+                q1 = np.percentile(valid_depths, 25)
+                q3 = np.percentile(valid_depths, 75)
+                iqr = q3 - q1
+                
+                if iqr > 0:
+                    # IQR法による外れ値の閾値
+                    lower_bound = q1 - 1.5 * iqr
+                    upper_bound = q3 + 1.5 * iqr
+                    
+                    # 外れ値を除去
+                    filtered_depths = valid_depths[
+                        (valid_depths >= lower_bound) & (valid_depths <= upper_bound)
+                    ]
+                    
+                    if len(filtered_depths) > 0:
+                        # 中央値を使用（ノイズに対してロバスト）
+                        depth_value = np.median(filtered_depths)
+                    else:
+                        # 外れ値除去後に有効値がなければ中央値を使用
+                        depth_value = np.median(valid_depths)
+                else:
+                    # IQRが0の場合（すべて同じ値）、中央値を使用
+                    depth_value = np.median(valid_depths)
+            else:
+                # サンプル数が少ない場合は中央値を使用
+                depth_value = np.median(valid_depths)
+        else:
+            # 補間なし: 単一ピクセルの深度値をそのまま使用
+            depth_value = depth_image[y_int, x_int]
+            
+            if depth_value == 0:
+                return None
+        
+        # スケールを適用してメートル単位に変換
+        depth_m = float(depth_value) * self.depth_scale
+        
+        return depth_m
 
     def pixels_to_3d_batch(self, points, depths):
         """
