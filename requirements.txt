@@ -7,6 +7,13 @@ matplotlib
 # インストール: pip install ultralytics
 ultralytics>=8.0.0
 
+# CUDA高速化用（オプション、CUDA環境の場合）
+# CUDAが利用可能な環境では、pip install cupy-cuda11x または cupy-cuda12x をインストール
+# CUDAバージョンに応じて適切なパッケージを選択してください
+# 例: pip install cupy-cuda11x  # CUDA 11.x用
+# 例: pip install cupy-cuda12x  # CUDA 12.x用
+# CuPyがインストールされていない場合、自動的にNumPyにフォールバックします
+
 # pyrealsense2: プラットフォームによって異なるパッケージを使用
 # macOS: pyrealsense2-macosx または pyrealsense2-mac
 # Linux/Windows: pyrealsense2 (公式パッケージ)

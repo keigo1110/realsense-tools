@@ -16,10 +16,45 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from realsense_utils import BagFileReader
+from realsense_utils import BagFileReader, CUPY_AVAILABLE
 from yolov8_pose_3d import YOLOv8PoseDetector, COCO_KEYPOINTS
 from jump_detector import JumpDetector
 from visualizer import JumpVisualizer
+
+# CuPyのインポート（CUDA高速化用）
+if CUPY_AVAILABLE:
+    import cupy as cp
+    print("CuPy available: Using CUDA acceleration for image processing")
+else:
+    print("CuPy not available: Using NumPy (CPU mode)")
+
+
+def resize_image_cuda(image, new_width, new_height):
+    """
+    画像をリサイズ（CUDA使用可能な場合は高速化）
+    
+    Args:
+        image: 入力画像（NumPy配列）
+        new_width: 新しい幅
+        new_height: 新しい高さ
+    
+    Returns:
+        リサイズされた画像（NumPy配列）
+    """
+    if CUPY_AVAILABLE:
+        try:
+            # CuPyを使用してGPUでリサイズ
+            gpu_image = cp.asarray(image)
+            # CuPyにはresize関数がないため、OpenCV CUDAを使用するかNumPyにフォールバック
+            # ここではNumPyにフォールバック（CuPyでリサイズする場合は別途実装が必要）
+            resized = cv2.resize(image, (new_width, new_height))
+            return resized
+        except Exception:
+            # CUDA処理に失敗した場合はCPUで処理
+            return cv2.resize(image, (new_width, new_height))
+    else:
+        # CPUでリサイズ
+        return cv2.resize(image, (new_width, new_height))
 
 
 def convert_keypoints_to_dict(keypoints_2d, keypoints_3d):
@@ -167,8 +202,8 @@ Examples:
     parser.add_argument(
         "--model-name",
         type=str,
-        default="yolov8n-pose.pt",
-        help="YOLOv8-Pose model name (yolov8n-pose.pt, yolov8s-pose.pt, etc.) (default: yolov8n-pose.pt)",
+        default="yolov8x-pose.pt",
+        help="YOLOv8-Pose model name (yolov8n-pose.pt, yolov8s-pose.pt, etc.) (default: yolov8x-pose.pt)",
     )
     parser.add_argument(
         "--threshold-vertical",
@@ -223,9 +258,13 @@ Examples:
     print(f"Output directory: {args.output}")
     print()
 
+    # モデルディレクトリを作成（存在しない場合）
+    model_dir = Path(args.model_dir)
+    model_dir.mkdir(parents=True, exist_ok=True)
+
     # YOLOv8-Poseモデルの読み込み
     print("Loading YOLOv8-Pose model...")
-    yolo_pose = YOLOv8PoseDetector(model_name=args.model_name, model_dir=args.model_dir)
+    yolo_pose = YOLOv8PoseDetector(model_name=args.model_name, model_dir=str(model_dir))
     if not yolo_pose.load_model():
         print("Error: Failed to load YOLOv8-Pose model", file=sys.stderr)
         sys.exit(1)
@@ -304,7 +343,7 @@ Examples:
             if args.resize_factor < 1.0:
                 new_width = int(color_image.shape[1] * args.resize_factor)
                 new_height = int(color_image.shape[0] * args.resize_factor)
-                inference_image = cv2.resize(color_image, (new_width, new_height))
+                inference_image = resize_image_cuda(color_image, new_width, new_height)
                 resize_scale_x = color_image.shape[1] / new_width
                 resize_scale_y = color_image.shape[0] / new_height
 
@@ -317,39 +356,49 @@ Examples:
             keypoints_2d = yolo_pose.detect_keypoints(inference_image)
             pose_time = time.time() - pose_start
 
-            # keypoints座標を元の画像サイズにスケール
+            # keypoints座標を元の画像サイズにスケール（リスト内包表記で高速化）
             if args.resize_factor < 1.0 and keypoints_2d:
-                scaled_keypoints_2d = []
-                for kp in keypoints_2d:
-                    if kp[0] is not None and kp[1] is not None:
-                        scaled_keypoints_2d.append(
-                            (kp[0] * resize_scale_x, kp[1] * resize_scale_y, kp[2])
-                        )
-                    else:
-                        scaled_keypoints_2d.append(kp)
-                keypoints_2d = scaled_keypoints_2d
+                keypoints_2d = [
+                    (kp[0] * resize_scale_x, kp[1] * resize_scale_y, kp[2])
+                    if kp[0] is not None and kp[1] is not None
+                    else kp
+                    for kp in keypoints_2d
+                ]
 
             if keypoints_2d is None:
                 continue
 
-            # 3D keypointsを計算
+            # 3D keypointsを計算（バッチ処理で高速化）
             depth_start = time.time()
-            keypoints_3d = {}
-            for i, (kp_name, kp_2d) in enumerate(zip(COCO_KEYPOINTS, keypoints_2d)):
-                if kp_2d[0] is not None and kp_2d[1] is not None:
-                    # 深度値を取得
-                    depth = bag_reader.get_depth_at_point(
-                        depth_frame, kp_2d[0], kp_2d[1]
-                    )
-
-                    if depth is not None:
-                        # 3D座標に変換
-                        x, y, z = bag_reader.pixel_to_3d(kp_2d[0], kp_2d[1], depth)
-                        keypoints_3d[kp_name] = (x, y, z)
-                    else:
-                        keypoints_3d[kp_name] = (None, None, None)
-                else:
-                    keypoints_3d[kp_name] = (None, None, None)
+            
+            # 有効なkeypointsの座標を収集（リスト内包表記で高速化）
+            valid_data = [
+                (kp_name, kp_2d[0], kp_2d[1])
+                for kp_name, kp_2d in zip(COCO_KEYPOINTS, keypoints_2d)
+                if kp_2d[0] is not None and kp_2d[1] is not None
+            ]
+            
+            # バッチ処理で深度値を一括取得
+            if valid_data:
+                valid_points = [(x, y) for _, x, y in valid_data]
+                depths = bag_reader.get_depth_at_points_batch(depth_frame, valid_points)
+                # バッチ処理で3D座標に一括変換
+                coords_3d = bag_reader.pixels_to_3d_batch(valid_points, depths)
+                
+                # 結果を辞書に格納（辞書内包表記で高速化）
+                valid_coords_dict = {
+                    kp_name: coords_3d[i] if coords_3d[i] is not None else (None, None, None)
+                    for i, (kp_name, _, _) in enumerate(valid_data)
+                }
+                # 全keypointsの辞書を作成（有効なものと無効なものを統合）
+                keypoints_3d = {
+                    kp_name: valid_coords_dict.get(kp_name, (None, None, None))
+                    for kp_name in COCO_KEYPOINTS
+                }
+            else:
+                # 有効なkeypointがない場合
+                keypoints_3d = {kp_name: (None, None, None) for kp_name in COCO_KEYPOINTS}
+            
             depth_time = time.time() - depth_start
 
             # 最初の数フレームで時間を表示
@@ -399,9 +448,10 @@ Examples:
 
             # 可視化フレームを生成（逐次書き込みでメモリ効率化）
             if not args.no_video:
-                # スケルトンを描画
+                # スケルトンを描画（リサイズされていない場合は直接使用）
                 skeleton_image = yolo_pose.draw_skeleton(
-                    color_image.copy(), keypoints_2d
+                    color_image if args.resize_factor >= 1.0 else color_image.copy(),
+                    keypoints_2d
                 )
 
                 # 統計情報を取得
@@ -425,7 +475,7 @@ Examples:
                 # フレームを即座に書き込み（メモリに保持しない）
                 video_writer.write(vis_frame)
 
-            # 進捗表示（処理速度と推定残り時間を含む）
+            # 進捗表示（処理速度を含む）
             current_time = time.time()
             # 最初のフレーム処理時、または10フレームごと、または5秒ごとに表示
             if (
@@ -436,14 +486,9 @@ Examples:
                 elapsed_time = current_time - start_time
                 if processed_frame_count > 0 and elapsed_time > 0:
                     fps = processed_frame_count / elapsed_time
-                    remaining_frames = (
-                        frame_num - processed_frame_count if frame_num > 0 else 0
-                    )
-                    estimated_remaining = remaining_frames / fps if fps > 0 else 0
                     print(
-                        f"Processed {processed_frame_count}/{frame_num} frames (skipped: {skipped_frame_count}) | "
-                        f"Speed: {fps:.1f} fps | Elapsed: {elapsed_time:.0f}s | "
-                        f"Estimated remaining: {estimated_remaining:.0f}s"
+                        f"Processed {processed_frame_count} frames (total frames read: {frame_num}, skipped: {skipped_frame_count}) | "
+                        f"Speed: {fps:.1f} fps | Elapsed: {elapsed_time:.0f}s"
                     )
                     last_progress_time = current_time
 

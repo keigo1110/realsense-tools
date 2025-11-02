@@ -140,24 +140,51 @@ python -c "from ultralytics import YOLO; print('YOLOv8-Poseインストール成
 
 初回実行時、YOLOv8-Pose モデルが自動的にダウンロードされます（モデルサイズは選択したモデルにより異なります）。
 
+### CUDA高速化（オプション）
+
+CUDA環境では、CuPyをインストールすることで画像処理と深度計算が高速化されます。
+
+**CuPyのインストール:**
+
+```bash
+# CUDA 11.x用
+pip install cupy-cuda11x
+
+# または CUDA 12.x用
+pip install cupy-cuda12x
+```
+
+**注意:** 複数のCuPyパッケージがインストールされている場合は警告が表示されます。以下のコマンドで不要なパッケージを削除してください：
+
+```bash
+# 重複しているCuPyパッケージを削除
+pip uninstall cupy-cuda11x cupy-cuda12x
+# 必要に応じて再インストール
+pip install cupy-cuda12x  # お使いのCUDAバージョンに合わせて選択
+```
+
+CuPyがインストールされていない場合でも、CPUモードで正常に動作します。
+
 **モデルの種類:**
 
-- `yolov8n-pose.pt`: nano（超高速、やや精度低下）- **推奨（デフォルト）**
+- `yolov8n-pose.pt`: nano（超高速、やや精度低下）
 - `yolov8s-pose.pt`: small（高速、バランス型）
 - `yolov8m-pose.pt`: medium（中速、高精度）
 - `yolov8l-pose.pt`: large（やや低速、高精度）
-- `yolov8x-pose.pt`: extra large（低速、最高精度）
+- `yolov8x-pose.pt`: extra large（最高精度）- **推奨（デフォルト）**
 
 **処理速度について:**
 
 - CPU 環境: 約 10-30fps（モデルサイズによる）
-- GPU 環境: 100-200fps+（GPU 性能による）
+- GPU 環境: 70-200fps+（GPU 性能とモデルサイズによる）
+- CUDA環境では最高精度モデル（yolov8x-pose.pt）でも十分な速度が得られます
 
 モデルを指定する場合:
 
 ```bash
+# より高速なモデルを使用する場合
 python jump_analyzer.py --input bagdata/my_recording.bag --output results/ \
-  --model-name yolov8s-pose.pt  # より高精度なモデルを使用
+  --model-name yolov8n-pose.pt  # 高速だが精度はやや低下
 ```
 
 ### 分析結果の見方

@@ -90,15 +90,15 @@ COCO_PAIRS = [
 class YOLOv8PoseDetector:
     """YOLOv8-Pose検出器（ultralytics使用）"""
 
-    def __init__(self, model_name="models/yolov8n-pose.pt", model_dir="models"):
+    def __init__(self, model_name="models/yolov8x-pose.pt", model_dir="models"):
         """
         Args:
             model_name: 使用するモデル名
-                - yolov8n-pose.pt: nano（超高速、やや精度低下） - 推奨
+                - yolov8n-pose.pt: nano（超高速、やや精度低下）
                 - yolov8s-pose.pt: small（高速、バランス型）
                 - yolov8m-pose.pt: medium（中速、高精度）
                 - yolov8l-pose.pt: large（やや低速、高精度）
-                - yolov8x-pose.pt: extra large（低速、最高精度）
+                - yolov8x-pose.pt: extra large（最高精度） - **推奨（デフォルト）**
             model_dir: モデルファイルを保存するディレクトリ
         """
         self.model_name = model_name
@@ -112,7 +112,12 @@ class YOLOv8PoseDetector:
             import torch
 
             if torch.cuda.is_available():
-                return "cuda"
+                # CUDAが利用可能な場合、明示的に0番目のGPUを指定
+                device = "cuda:0"
+                # CUDAデバイス情報を表示
+                print(f"  CUDA available: {torch.cuda.get_device_name(0)}")
+                print(f"  CUDA version: {torch.version.cuda}")
+                return device
             elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
                 return "mps"  # Apple Silicon GPU
             else:
@@ -131,39 +136,32 @@ class YOLOv8PoseDetector:
             print(f"Loading YOLOv8-Pose model: {self.model_name}")
             print(f"Using device: {self.device}")
 
-            # モデルファイルのパス
+            # モデルディレクトリが存在しない場合は作成
+            if not os.path.exists(self.model_dir):
+                os.makedirs(self.model_dir, exist_ok=True)
+                print(f"Created model directory: {self.model_dir}")
+
+            # モデルファイルのパスを決定
             if os.path.exists(self.model_name):
+                # フルパスで存在する場合
                 model_path = self.model_name
             elif os.path.exists(os.path.join(self.model_dir, self.model_name)):
+                # modelsディレクトリ内に存在する場合
                 model_path = os.path.join(self.model_dir, self.model_name)
             else:
-                # モデル名のみの場合、自動ダウンロードされる
-                model_path = self.model_name
+                # モデルが存在しない場合、modelsディレクトリ内のパスを指定して自動ダウンロード
+                # これにより、モデルはmodelsディレクトリ内に保存される
+                model_path = os.path.join(self.model_dir, self.model_name)
+                print(f"Model not found. Will download to: {model_path}")
 
-            # YOLOv8-Poseモデルを読み込み
+            # YOLOv8-Poseモデルを読み込み（存在しない場合は自動ダウンロード）
             self.model = YOLO(model_path)
 
-            # PyTorch 2.0+でtorch.compileを使用（10-30%高速化）
-            # 注意: MPS (Apple Silicon) ではtorch.compileのサポートが限定的な場合がある
-            try:
-                if (
-                    hasattr(self.model.model, "model")
-                    and hasattr(torch, "compile")
-                    and self.device != "mps"  # MPSではtorch.compileをスキップ
-                ):
-                    # モデルのコンパイルを試行（CPU/CUDAのみ）
-                    self.model.model.model = torch.compile(
-                        self.model.model.model, mode="reduce-overhead"
-                    )
-                    print("  torch.compile enabled for faster inference")
-                elif self.device == "mps":
-                    print(
-                        "  MPS detected: torch.compile skipped (limited support on MPS)"
-                    )
-            except Exception as e:
-                # コンパイルに失敗しても通常動作は可能
-                pass
-
+            # torch.compileはultralyticsとの互換性問題があるため無効化
+            # 代わりに、YOLOv8の推論時にhalf精度とdevice指定で高速化を行う
+            # 注意: torch.compileを使用すると'OptimizedModule'オブジェクトが
+            # subscriptableでなくなり、ultralytics内部のコードでエラーが発生する
+            
             print(f"YOLOv8-Pose model loaded successfully")
             return True
 
@@ -195,19 +193,25 @@ class YOLOv8PoseDetector:
             image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
             # 推論実行（最適化オプション）
-            # imgsz: 入力画像サイズを自動調整（高速化）
+            # imgsz: 入力画像サイズに応じて最適化（大きな画像は640、小さい画像はそのまま）
             # conf: 信頼度閾値（デフォルト）
             # half: 半精度推論（GPU使用時、約2倍高速化）
             # max_det: 最大検出数（人物が1人の場合は1に制限して高速化）
-            # stream: ストリームモード（メモリ効率化）
-            half = self.device in ["cuda", "mps"]  # GPU/MPS使用時は半精度推論を有効化
+            is_cuda = self.device.startswith("cuda") if isinstance(self.device, str) else False
+            is_mps = self.device == "mps"
+            half = is_cuda or is_mps  # GPU/MPS使用時は半精度推論を有効化
+
+            # 入力画像サイズに応じてimgszを動的に調整（推論速度の最適化）
+            max_dim = max(h, w)
+            # 640ピクセル以下の場合はそのまま、それ以上は640にリサイズ
+            imgsz = min(640, max(320, (max_dim // 32) * 32))  # 32の倍数に丸める
 
             results = self.model(
                 image_rgb,
                 verbose=False,
                 device=self.device,
-                half=half,  # 半精度推論（GPU/MPS使用時）
-                imgsz=640,  # 最適化された入力サイズ
+                half=half,  # 半精度推論（GPU/MPS使用時、約2倍高速化）
+                imgsz=imgsz,  # 動的に最適化された入力サイズ
                 max_det=1,  # 最大検出数を1に制限（ジャンプ分析では1人のみ、高速化）
                 conf=0.25,  # 信頼度閾値（デフォルトより低めに設定して検出確率を上げる）
             )
@@ -233,16 +237,13 @@ class YOLOv8PoseDetector:
             # 最初の人物のkeypointsを使用（必要に応じて最大bboxサイズの人物を選択）
             if len(keypoints_data) > 1:
                 # 複数人物の場合は、最大の信頼度を持つ人物を選択
-                # 各人物の平均信頼度を計算
-                person_confidences = []
-                for person_kpts in keypoints_data:
-                    # 有効なkeypointsの信頼度の平均
-                    valid_scores = person_kpts[:, 2][person_kpts[:, 2] > 0]
-                    if len(valid_scores) > 0:
-                        person_confidences.append(np.mean(valid_scores))
-                    else:
-                        person_confidences.append(0.0)
-
+                # 各人物の平均信頼度を計算（NumPyベクトル演算で高速化）
+                person_confidences = np.array([
+                    np.mean(person_kpts[:, 2][person_kpts[:, 2] > 0])
+                    if np.any(person_kpts[:, 2] > 0)
+                    else 0.0
+                    for person_kpts in keypoints_data
+                ])
                 # 最大信頼度の人物を選択
                 best_person_idx = np.argmax(person_confidences)
                 keypoints_17 = keypoints_data[best_person_idx]
