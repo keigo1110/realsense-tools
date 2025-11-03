@@ -94,31 +94,44 @@ pyrealsense2 または pyrealsense2-macosx
 
 ### 録画
 
-#### 1. カラー + 深度ストリームを録画（推奨）
+録画したファイルは自動的に`record/`ディレクトリに保存されます。ディレクトリが存在しない場合は自動的に作成されます。
+
+#### 1. 実行日時で自動ファイル名生成（推奨）
+
+**カラー + 深度ストリームを録画:**
+
+```bash
+python pose-record.py --enable-depth
+```
+
+**カラーストリームのみ録画:**
+
+```bash
+python pose-record.py
+```
+
+実行日時（`YYYYMMDD_HHMMSS.bag`形式）で自動的にファイル名が生成されます。
+例: `record/20241201_143052.bag`
+
+連続して録画を実行しても、毎回新しいファイル名が自動生成されるため、ファイル名の重複を気にする必要がありません。
+
+#### 2. カスタムファイル名を指定
+
+カスタムファイル名を指定する場合も、`record/`ディレクトリに保存されます：
 
 ```bash
 python pose-record.py --record my_recording.bag --enable-depth
 ```
 
-これにより、カラー映像と深度データの両方が`.bag`ファイルに保存されます。
-後から詳細な分析が可能になります。
-
-#### 2. カラーストリームのみ録画
-
-```bash
-python pose-record.py --record my_recording.bag
-```
-
-深度データが不要な場合に使用します。ファイルサイズは小さくなりますが、
-後から深度データを使った分析はできません。
+この場合、`record/my_recording.bag`に保存されます。
 
 #### 3. 解像度とFPSを指定
 
 ```bash
-python pose-record.py --record my_recording.bag --enable-depth --resolution 1280 720 --fps 60
+python pose-record.py --enable-depth --resolution 1280 720 --fps 60
 ```
 
-高解像度・高フレームレートで録画する場合に使用します。
+高解像度・高フレームレートで録画する場合に使用します。ファイル名は実行日時で自動生成されます。
 
 #### 操作方法
 
@@ -138,12 +151,14 @@ python pose-record.py --record my_recording.bag --enable-depth --resolution 1280
    `config.toml`ファイルを作成し、パラメータを設定します：
    
    ```toml
-   input = "bagdata/my_recording.bag"
+   input = "record/20241201_143052.bag"  # 録画した.bagファイルのパス
    output = "results/"
    model_name = "yolov8x-pose.pt"
    interactive_3d = true
    # その他の設定...
    ```
+   
+   **注意**: 録画したファイルは`record/`ディレクトリに保存されます。実行日時で自動生成されたファイル名（例: `20241201_143052.bag`）を使用するか、カスタムファイル名を指定した場合はそのファイル名を指定してください。
 
 2. **実行**
    
@@ -211,7 +226,7 @@ python jump_analyzer.py --input bagdata/my_recording.bag --output results/ --int
 
 ```toml
 # 入力・出力パス
-input = "bagdata/my_recording.bag"
+input = "record/20241201_143052.bag"  # 録画した.bagファイルのパス（record/ディレクトリに保存されます）
 output = "results/"
 
 # モデル設定

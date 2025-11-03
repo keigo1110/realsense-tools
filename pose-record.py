@@ -4,12 +4,15 @@ RealSense Recording Tool
 RealSenseカメラから映像と深度データを.bagファイルに録画するシンプルなツール
 
 使い方:
-    python pose-record.py --record my_recording.bag
-    python pose-record.py --record my_recording.bag --enable-depth
+    python pose-record.py
+    python pose-record.py --enable-depth
+    python pose-record.py --record custom_name.bag
 """
 
 import argparse
+import os
 import sys
+from datetime import datetime
 
 import cv2
 import numpy as np
@@ -22,14 +25,17 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 録画例:
-  # カラーストリームのみ録画
-  python pose-record.py --record recording.bag
+  # 実行日時で自動ファイル名生成（カラーストリームのみ）
+  python pose-record.py
 
-  # カラー + 深度ストリームを録画（推奨）
-  python pose-record.py --record recording.bag --enable-depth
+  # 実行日時で自動ファイル名生成（カラー + 深度ストリーム、推奨）
+  python pose-record.py --enable-depth
+
+  # カスタムファイル名を指定
+  python pose-record.py --record custom_name.bag --enable-depth
 
   # 解像度とFPSを指定して録画
-  python pose-record.py --record recording.bag --enable-depth --resolution 1280 720 --fps 60
+  python pose-record.py --enable-depth --resolution 1280 720 --fps 60
 
 操作方法:
   - ESCキー: 録画を停止して終了
@@ -38,8 +44,8 @@ def main():
     )
 
     # 録画設定
-    parser.add_argument("--record", type=str, required=True, metavar='FILE',
-                       help="録画先の.bagファイル名 (例: recording.bag)")
+    parser.add_argument("--record", type=str, default=None, metavar='FILE',
+                       help="録画先の.bagファイル名（指定しない場合は実行日時で自動生成）")
     parser.add_argument("--enable-depth", action="store_true",
                        help="深度ストリームも録画する（推奨）")
 
@@ -51,6 +57,21 @@ def main():
                        help="フレームレート (デフォルト: 30)")
 
     args = parser.parse_args()
+
+    # recordディレクトリの作成
+    record_dir = "record"
+    os.makedirs(record_dir, exist_ok=True)
+
+    # ファイル名の決定
+    if args.record:
+        # カスタムファイル名が指定された場合
+        if not args.record.endswith('.bag'):
+            args.record += '.bag'
+        record_file = os.path.join(record_dir, args.record)
+    else:
+        # 実行日時で自動生成（YYYYMMDD_HHMMSS.bag形式）
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        record_file = os.path.join(record_dir, f"{timestamp}.bag")
 
     # RealSenseパイプラインの設定
     pipeline = rs.pipeline()
@@ -69,12 +90,12 @@ def main():
         print(f"録画モード: カラーのみ ({width}x{height} @ {args.fps}fps)")
 
     # 録画ファイルを設定
-    config.enable_record_to_file(args.record)
+    config.enable_record_to_file(record_file)
 
     # パイプライン開始
     try:
         pipeline.start(config)
-        print(f"録画を開始します: {args.record}")
+        print(f"録画を開始します: {record_file}")
         print("ESCキーで停止")
 
         frame_count = 0
@@ -102,7 +123,9 @@ def main():
                        cv2.FONT_HERSHEY_SIMPLEX, 1, color, 2, cv2.LINE_AA)
             cv2.putText(image, f"Frames: {frame_count}", (10, 70),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
-            cv2.putText(image, f"File: {args.record}", (10, image.shape[0] - 20),
+            # ファイル名を短縮表示（record/部分は省略）
+            display_filename = os.path.basename(record_file)
+            cv2.putText(image, f"File: {display_filename}", (10, image.shape[0] - 20),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
 
             cv2.imshow('RealSense Recording', image)
@@ -127,7 +150,7 @@ def main():
         print("\n\n録画を中断しました")
     finally:
         pipeline.stop()
-        print(f"録画が完了しました: {args.record}")
+        print(f"録画が完了しました: {record_file}")
         print(f"総フレーム数: {frame_count}")
 
 
