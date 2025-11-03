@@ -928,9 +928,17 @@ Examples:
     if args.input is None:
         print("Error: --input is required (can be specified in config file or command line)", file=sys.stderr)
         sys.exit(1)
+    # 出力ディレクトリ: 常に「ベースディレクトリ/入力ファイル名(拡張子なし)」に集約
+    input_path_for_output = Path(args.input)
     if args.output is None:
-        print("Error: --output is required (can be specified in config file or command line)", file=sys.stderr)
-        sys.exit(1)
+        base_output_dir = input_path_for_output.parent
+        reason = "not specified"
+    else:
+        base_output_dir = Path(args.output)
+        reason = "specified"
+    final_output_dir = base_output_dir / input_path_for_output.stem
+    args.output = str(final_output_dir)
+    print(f"Output directory ({reason}): {args.output}")
 
     # 出力ディレクトリを作成
     output_dir = Path(args.output)
