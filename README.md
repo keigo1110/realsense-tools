@@ -10,14 +10,14 @@ YOLOv8-Pose は高速（CPU: 10-30fps, GPU: 100-200fps+）で、実用的な精�
 - [基本的な使い方](#基本的な使い方)
   - [録画](#録画)
   - [ジャンプ分析](#ジャンプ分析)
-  - [インタラクティブ3Dアニメーション](#インタラクティブ3dアニメーション)
+  - [インタラクティブ 3D アニメーション](#インタラクティブ3dアニメーション)
 - [詳細オプション](#詳細オプション)
 - [トラブルシューティング](#トラブルシューティング)
 - [関連リンク](#関連リンク)
 
 ## システム要件
 
-- Python 3.7 以上（推奨: 3.10以上）
+- Python 3.7 以上（推奨: 3.10 以上）
 - RealSense カメラ（D400 シリーズ等）
 - macOS / Linux / Windows
 
@@ -39,7 +39,7 @@ pip install pyrealsense2
 
 **注意**: macOS では`pyrealsense2-macosx`を使用してください。公式の`pyrealsense2`は macOS ARM64 に対応していません。
 
-### 2. YOLOv8-Poseのインストール
+### 2. YOLOv8-Pose のインストール
 
 ```bash
 # ultralyticsをインストール（YOLOv8-Pose含む）
@@ -49,13 +49,14 @@ pip install ultralytics
 初回実行時、モデルが自動的にダウンロードされます。
 
 **動作確認:**
+
 ```bash
 python -c "from ultralytics import YOLO; print('YOLOv8-Poseインストール成功')"
 ```
 
-### 3. CUDA高速化（オプション）
+### 3. CUDA 高速化（オプション）
 
-CUDA環境では、CuPyをインストールすることで画像処理と深度計算が高速化されます。
+CUDA 環境では、CuPy をインストールすることで画像処理と深度計算が高速化されます。
 
 ```bash
 # CUDA 11.x用
@@ -65,7 +66,7 @@ pip install cupy-cuda11x
 pip install cupy-cuda12x
 ```
 
-**注意:** 複数のCuPyパッケージがインストールされている場合は警告が表示されます。不要なパッケージを削除してください：
+**注意:** 複数の CuPy パッケージがインストールされている場合は警告が表示されます。不要なパッケージを削除してください：
 
 ```bash
 # 重複しているCuPyパッケージを削除
@@ -74,7 +75,7 @@ pip uninstall cupy-cuda11x cupy-cuda12x
 pip install cupy-cuda12x  # お使いのCUDAバージョンに合わせて選択
 ```
 
-CuPyがインストールされていない場合でも、CPUモードで正常に動作します。
+CuPy がインストールされていない場合でも、CPU モードで正常に動作します。
 
 ### インストール済みパッケージ一覧（参考）
 
@@ -125,7 +126,7 @@ python pose-record.py --record my_recording.bag --enable-depth
 
 この場合、`record/my_recording.bag`に保存されます。
 
-#### 3. 解像度とFPSを指定
+#### 3. 解像度と FPS を指定
 
 ```bash
 python pose-record.py --enable-depth --resolution 1280 720 --fps 60
@@ -135,7 +136,7 @@ python pose-record.py --enable-depth --resolution 1280 720 --fps 60
 
 #### 操作方法
 
-- **ESCキー**: 録画を停止して終了
+- **ESC キー**: 録画を停止して終了
 - **スペースキー**: 表示のみ一時停止（実際の録画は続行中）
 
 ### ジャンプ分析
@@ -147,9 +148,9 @@ python pose-record.py --enable-depth --resolution 1280 720 --fps 60
 設定ファイル（`config.toml`）を使用することで、すべてのパラメータを一元管理できます。
 
 1. **設定ファイルを準備**
-   
+
    `config.toml`ファイルを作成し、パラメータを設定します：
-   
+
    ```toml
    input = "record/20241201_143052.bag"  # 録画した.bagファイルのパス
    output = "results/"
@@ -157,17 +158,17 @@ python pose-record.py --enable-depth --resolution 1280 720 --fps 60
    interactive_3d = true
    # その他の設定...
    ```
-   
+
    **注意**: 録画したファイルは`record/`ディレクトリに保存されます。実行日時で自動生成されたファイル名（例: `20241201_143052.bag`）を使用するか、カスタムファイル名を指定した場合はそのファイル名を指定してください。
 
 2. **実行**
-   
+
    ```bash
    python jump_analyzer.py --config config.toml
    ```
-   
+
    コマンドライン引数で一部のパラメータを上書きすることも可能です：
-   
+
    ```bash
    python jump_analyzer.py --config config.toml --interactive-3d
    ```
@@ -187,36 +188,39 @@ python jump_analyzer.py --input bagdata/my_recording.bag --output results/
 - `jump_statistics_jumps.csv`: 検出されたジャンプの詳細
 - `jump_statistics_trajectory.csv`: 軌跡データ
 - `jump_visualization.mp4`: 可視化動画（keypoints、軌跡、測定値を描画）
-- `keypoints_3d_animation.gif`: 3Dキーポイントアニメーション（スケルトンの3D動画）
-- `jump_trajectory_horizontal.png`: ジャンプ軌跡（水平面：XZ平面での移動経路）
+- `keypoints_3d_animation.gif`: 3D キーポイントアニメーション（スケルトンの 3D 動画）
+- `jump_trajectory_horizontal.png`: ジャンプ軌跡（水平面：XZ 平面での移動経路）
 - `jump_trajectory_height.png`: ジャンプ軌跡（高さ-時間：ジャンプの高さ変化）
-- `keypoint_x_timeline.png`: 全キーポイントのX座標時系列グラフ
-- `keypoint_y_timeline.png`: 全キーポイントのY座標時系列グラフ
-- `keypoint_z_timeline.png`: 全キーポイントのZ座標時系列グラフ
+- `keypoint_x_timeline.png`: 全キーポイントの X 座標時系列グラフ
+- `keypoint_y_timeline.png`: 全キーポイントの Y 座標時系列グラフ
+- `keypoint_z_timeline.png`: 全キーポイントの Z 座標時系列グラフ
 
-### インタラクティブ3Dアニメーション
+### インタラクティブ 3D アニメーション
 
-**よく使う機能**: マウスで視点を自由に動かせるインタラクティブな3Dアニメーションを表示できます。
+**よく使う機能**: マウスで視点を自由に動かせるインタラクティブな 3D アニメーションを表示できます。
 
 **設定ファイルを使用する場合：**
+
 ```bash
 # config.tomlで interactive_3d = true に設定
 python jump_analyzer.py --config config.toml
 ```
 
 **コマンドライン引数を使用する場合：**
+
 ```bash
 # インタラクティブモードで表示
 python jump_analyzer.py --input bagdata/my_recording.bag --output results/ --interactive-3d
 ```
 
 **操作方法:**
+
 - **マウスドラッグ**: 視点を回転
 - **マウスホイール**: ズームイン/アウト
 - **ウィンドウを閉じる**: 終了
 
 インタラクティブモードでは、アニメーション中に視点を自由に変更できます。
-通常のGIF生成と併用することも可能です（`--interactive-3d`を指定するとインタラクティブ表示が優先されます）。
+通常の GIF 生成と併用することも可能です（`--interactive-3d`を指定するとインタラクティブ表示が優先されます）。
 
 ## 詳細オプション
 
@@ -271,6 +275,7 @@ minimal_data = false
 ```
 
 設定ファイルを使用する場合：
+
 ```bash
 python jump_analyzer.py --config config.toml
 ```
@@ -302,7 +307,7 @@ python jump_analyzer.py --input bagdata/my_recording.bag --output results/ \
   --threshold-horizontal 0.2
 ```
 
-### YOLOv8-Poseモデルの選択
+### YOLOv8-Pose モデルの選択
 
 **モデルの種類:**
 
@@ -323,9 +328,10 @@ python jump_analyzer.py --input bagdata/my_recording.bag --output results/ \
 ```
 
 **処理速度について:**
+
 - CPU 環境: 約 10-30fps（モデルサイズによる）
 - GPU 環境: 70-200fps+（GPU 性能とモデルサイズによる）
-- CUDA環境では最高精度モデル（yolov8x-pose.pt）でも十分な速度が得られます
+- CUDA 環境では最高精度モデル（yolov8x-pose.pt）でも十分な速度が得られます
 
 ### 高速化オプション（処理が遅い場合）
 
@@ -362,35 +368,36 @@ python jump_analyzer.py --help
 
 主要なオプション：
 
-- `--input`: 入力.bagファイルのパス（必須）
+- `--input`: 入力.bag ファイルのパス（必須）
 - `--output`: 出力ディレクトリ（必須）
 - `--model-dir`: モデルディレクトリ（デフォルト: `models/`）
-- `--model-name`: 使用するYOLOv8-Poseモデル（デフォルト: `yolov8x-pose.pt`）
+- `--model-name`: 使用する YOLOv8-Pose モデル（デフォルト: `yolov8x-pose.pt`）
 - `--threshold-vertical`: 垂直ジャンプ検出閾値（メートル、デフォルト: 0.05）
 - `--threshold-horizontal`: 水平ジャンプ検出閾値（メートル、デフォルト: 0.1）
-- `--interactive-3d`: インタラクティブ3Dアニメーションを表示
-- `--use-kalman-filter`: Kalmanフィルタによる時系列平滑化を使用
-- `--smooth-keypoints N`: キーポイント平滑化のウィンドウサイズ（デフォルト: 5、0で無効化）
+- `--interactive-3d`: インタラクティブ 3D アニメーションを表示
+- `--use-kalman-filter`: Kalman フィルタによる時系列平滑化を使用
+- `--smooth-keypoints N`: キーポイント平滑化のウィンドウサイズ（デフォルト: 5、0 で無効化）
 - `--depth-kernel-size N`: 深度補間のカーネルサイズ（デフォルト: 3）
 - `--no-depth-interpolation`: 深度補間を無効化（高速だが精度低下）
 - `--no-video`: 可視化動画をスキップ
-- `--no-3d-animation`: 3Dキーポイントアニメーションをスキップ
-- `--frame-skip N`: Nフレームおきに処理（デフォルト: 1）
+- `--no-3d-animation`: 3D キーポイントアニメーションをスキップ
+- `--frame-skip N`: N フレームおきに処理（デフォルト: 1）
 - `--resize-factor F`: 画像リサイズ率（0.0-1.0、デフォルト: 1.0）
 - `--minimal-data`: ジャンプ検出時のみデータを保存
 
 ## 分析結果の見方
 
-- **垂直ジャンプ**: 高さ（Z軸方向）の変化を測定
-- **幅跳び**: 水平距離（X, Y軸方向）を測定
-- **軌跡**: 各keypointの時系列3D座標を記録
+- **垂直ジャンプ**: 高さ（Z 軸方向）の変化を測定
+- **幅跳び**: 水平距離（X, Y 軸方向）を測定
+- **軌跡**: 各 keypoint の時系列 3D 座標を記録
 
 出力ファイル：
-- `keypoints_3d.json`: 全フレームの3Dキーポイントデータ（JSON形式）
-- `jump_statistics_*.csv`: 統計情報、ジャンプ詳細、軌跡データ（CSV形式）
-- `jump_visualization.mp4`: 2D可視化動画（キーポイント、軌跡、測定値を描画）
-- `keypoints_3d_animation.gif`: 3Dキーポイントアニメーション（またはインタラクティブ表示）
-- `jump_trajectory_horizontal.png`: ジャンプ軌跡（水平面：XZ平面での移動経路、開始点・離陸点・着地点をマーク）
+
+- `keypoints_3d.json`: 全フレームの 3D キーポイントデータ（JSON 形式）
+- `jump_statistics_*.csv`: 統計情報、ジャンプ詳細、軌跡データ（CSV 形式）
+- `jump_visualization.mp4`: 2D 可視化動画（キーポイント、軌跡、測定値を描画）
+- `keypoints_3d_animation.gif`: 3D キーポイントアニメーション（またはインタラクティブ表示）
+- `jump_trajectory_horizontal.png`: ジャンプ軌跡（水平面：XZ 平面での移動経路、開始点・離陸点・着地点をマーク）
 - `jump_trajectory_height.png`: ジャンプ軌跡（高さ-時間：ジャンプの高さ変化を時系列で表示）
 - `keypoint_*_timeline.png`: 全キーポイントの各座標軸の時系列グラフ
 
@@ -405,7 +412,7 @@ python jump_analyzer.py --help
 
 ## トラブルシューティング
 
-### pyrealsense2のインストールエラー
+### pyrealsense2 のインストールエラー
 
 **macOS (ARM64/Intel)**
 
@@ -431,7 +438,7 @@ pip install pyrealsense2
 
 **注意**: これらすべてのパッケージは同じインターフェース（`import pyrealsense2 as rs`）を提供するため、コードの変更は不要です。
 
-### ultralyticsのインストールエラー
+### ultralytics のインストールエラー
 
 ```bash
 # pipをアップグレードしてから再試行
@@ -445,24 +452,24 @@ pip install ultralytics
 - モデルは初回実行時に自動ダウンロードされます
 - 手動でダウンロードする場合：https://github.com/ultralytics/assets/releases からダウンロードして`models/`ディレクトリに配置
 
-### PyTorchのCUDAサポートエラー（GPU使用時）
+### PyTorch の CUDA サポートエラー（GPU 使用時）
 
-CUDA対応版のPyTorchをインストール：
+CUDA 対応版の PyTorch をインストール：
 
 ```bash
 pip uninstall torch torchvision
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
 ```
 
-ただし、YOLOv8-PoseはCPUでも高速に動作します。
+ただし、YOLOv8-Pose は CPU でも高速に動作します。
 
-### RealSenseカメラが認識されない
+### RealSense カメラが認識されない
 
 - カメラが接続されているか確認
 - 他のプログラムがカメラを使用していないか確認
 - デバイスドライバーが正しくインストールされているか確認
 
-### .bagファイルが読み込めない
+### .bag ファイルが読み込めない
 
 - 深度データが記録されているか確認（`--enable-depth`オプションで録画）
 - ファイルパスが正しいか確認
@@ -470,19 +477,22 @@ pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
 
 ### パフォーマンス関連
 
-**CPU環境:**
-- `yolov8n-pose`: 約20-30fps
-- `yolov8s-pose`: 約10-20fps
-- `yolov8m-pose`: 約5-10fps
+**CPU 環境:**
 
-**GPU環境（CUDA）:**
-- `yolov8n-pose`: 約150-200fps
-- `yolov8s-pose`: 約100-150fps
-- `yolov8m-pose`: 約50-100fps
+- `yolov8n-pose`: 約 20-30fps
+- `yolov8s-pose`: 約 10-20fps
+- `yolov8m-pose`: 約 5-10fps
+
+**GPU 環境（CUDA）:**
+
+- `yolov8n-pose`: 約 150-200fps
+- `yolov8s-pose`: 約 100-150fps
+- `yolov8m-pose`: 約 50-100fps
 
 **Apple Silicon（MPS）:**
-- 自動的にMPSが使用されます（利用可能な場合）
-- 速度はCPUとGPUの中間程度
+
+- 自動的に MPS が使用されます（利用可能な場合）
+- 速度は CPU と GPU の中間程度
 
 ## 録画したファイルの再生
 
