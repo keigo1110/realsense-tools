@@ -9,6 +9,10 @@ toml  # 設定ファイル読み込み用
 # インストール: pip install ultralytics
 ultralytics>=8.0.0
 
+# Open3D: 2台のカメラの自動キャリブレーション用
+# ターゲットレス自動外部標定（FPFH特徴量 + RANSAC + ICP）に使用
+open3d>=0.18.0
+
 # CUDA高速化用（オプション、CUDA環境の場合）
 # CUDAが利用可能な環境では、pip install cupy-cuda11x または cupy-cuda12x をインストール
 # CUDAバージョンに応じて適切なパッケージを選択してください

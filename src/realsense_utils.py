@@ -10,9 +10,24 @@ import pyrealsense2 as rs
 import cv2
 
 # CuPyの利用可否をチェック（CUDA高速化用）
+# フォールバック警告フラグ（一度だけ警告を表示）
+_cuda_fallback_warned = False
+
 try:
     import cupy as cp
-    CUPY_AVAILABLE = True
+    # CuPyがインストールされていても、実際にCUDAが動作するか確認
+    try:
+        # CUDAデバイスにアクセスして動作確認
+        test_array = cp.array([1.0])
+        del test_array
+        cp.get_default_memory_pool().free_all_blocks()  # メモリをクリア
+        CUPY_AVAILABLE = True
+    except Exception as e:
+        # CuPyはインストールされているが、CUDAが動作しない場合
+        CUPY_AVAILABLE = False
+        import sys
+        print(f"Warning: CuPy installed but CUDA not available: {e}", file=sys.stderr)
+        print("Falling back to NumPy (CPU mode)", file=sys.stderr)
 except ImportError:
     CUPY_AVAILABLE = False
     # cpはNoneのまま使用する（条件チェックで使用）
@@ -71,7 +86,7 @@ class BagFileReader:
                         file_duration_sec = self.file_duration.total_seconds()
                         print(f"Bag file loaded: {self.bag_file_path}")
                         print(f"Bag file duration: {file_duration_sec:.2f} seconds")
-                        
+
                         # 開始時間が指定されている場合はシーク（0はNoneとして扱う）
                         if self.start_time is not None and self.start_time > 0:
                             try:
@@ -88,7 +103,7 @@ class BagFileReader:
                                 # 初期化をリセット（最初のフレームからタイムスタンプを記録）
                                 self.start_timestamp = None
                                 self._skipped_frames_for_seek = 0
-                        
+
                         # 終了時間の検証（0はNoneとして扱う）
                         if self.end_time is not None and self.end_time > 0:
                             if self.end_time <= (self.start_time or 0):
@@ -96,7 +111,7 @@ class BagFileReader:
                             if self.end_time > file_duration_sec:
                                 print(f"Warning: End time ({self.end_time:.2f}s) exceeds file duration ({file_duration_sec:.2f}s). Using file duration.")
                                 self.end_time = None
-                        
+
                         # 時間範囲の表示
                         if (self.start_time is not None and self.start_time > 0) or (self.end_time is not None and self.end_time > 0):
                             start_str = f"{self.start_time:.2f}" if (self.start_time is not None and self.start_time > 0) else "0.00"
@@ -105,7 +120,7 @@ class BagFileReader:
                             end_val = self.end_time if (self.end_time is not None and self.end_time > 0) else file_duration_sec
                             duration_str = f"{end_val - start_val:.2f}"
                             print(f"Playback range: {start_str}s - {end_str}s (duration: {duration_str}s)")
-                        
+
                         # 自動リピートを無効化（重要：これがないとループ再生される）
                         self.playback.set_real_time(False)
                 except Exception as e:
@@ -167,18 +182,18 @@ class BagFileReader:
             # 手動シーク処理（seek()が使えない場合、start_time > 0の場合のみ）
             if self._manual_seek and self.start_time is not None and self.start_time > 0:
                 current_timestamp = color_frame.get_timestamp()
-                
+
                 # タイムスタンプがミリ秒単位か秒単位かを判定
                 timestamp_diff = current_timestamp - self.start_timestamp
                 if self.start_timestamp > 1000000000:  # ミリ秒単位と判定
                     elapsed_seconds = timestamp_diff / 1000.0
                 else:
                     elapsed_seconds = timestamp_diff
-                
+
                 # デバッグ: 最初の数フレームのみログ出力
                 if self._skipped_frames_for_seek < 5 or (self._skipped_frames_for_seek % 30 == 0):
                     print(f"  Frame {self._skipped_frames_for_seek}: elapsed={elapsed_seconds:.2f}s, target={self.start_time:.2f}s")
-                
+
                 # 開始時間に達するまでフレームをスキップ
                 if elapsed_seconds < self.start_time:
                     self._skipped_frames_for_seek += 1
@@ -191,7 +206,7 @@ class BagFileReader:
                     print(f"  Manually seeked to {elapsed_seconds:.2f} seconds (skipped {self._skipped_frames_for_seek} frames)")
 
             current_timestamp = color_frame.get_timestamp()
-            
+
             # 終了時間のチェック（開始時間からの経過時間で計算、end_time > 0の場合のみ）
             if self.end_time is not None and self.end_time > 0 and self.playback_start_time is not None:
                 # タイムスタンプがミリ秒単位か秒単位かを判定
@@ -200,23 +215,23 @@ class BagFileReader:
                     elapsed_seconds = timestamp_diff / 1000.0
                 else:
                     elapsed_seconds = timestamp_diff
-                
+
                 # 終了時間を超過した場合は終了
                 start_val = self.start_time if (self.start_time is not None and self.start_time > 0) else 0
                 playback_duration = self.end_time - start_val
                 if elapsed_seconds >= playback_duration - 0.05:  # 50msのマージン
                     return None, None
-            
+
             # プレイバック位置をチェックして終端検出
             if not is_first_frame and self.playback and self.file_duration:
                 try:
                     position = self.playback.get_position()
                     duration_sec = self.file_duration.total_seconds()
                     position_sec = position.total_seconds()
-                    
+
                     # 終了時間が指定されている場合は、それを使用（0はNoneとして扱う）
                     max_position = self.end_time if (self.end_time is not None and self.end_time > 0) else duration_sec
-                    
+
                     # 終端に達した場合は即座に終了
                     if position_sec >= max_position - 0.05:  # 50msのマージン
                         return None, None
@@ -236,7 +251,7 @@ class BagFileReader:
                         return None, None
                 else:
                     self.same_timestamp_count = 0
-                    
+
                     # ファイルの長さを超えていないかチェック（相対時間を使用）
                     if self.start_timestamp is not None and self.file_duration:
                         timestamp_diff = abs(current_timestamp - self.start_timestamp)
@@ -264,12 +279,27 @@ class BagFileReader:
             return color_frame, depth_frame
 
         except RuntimeError as e:
-            # ファイルの終端に到達またはタイムアウト
-            error_msg = str(e).lower()
-            if "timeout" in error_msg or "didn't arrive" in error_msg:
+            # タイムアウトエラーは正常終了（ファイル終端）
+            if "timeout" in str(e).lower() or "frame didn't arrive" in str(e).lower():
                 return None, None
-            # その他のエラーも終端とみなす
-            return None, None
+            raise
+
+    def poll_for_frames(self):
+        """
+        非ブロッキングでフレームを取得（デュアルカメラ同期用）
+        
+        Returns:
+            frameset: フレームセット（取得できた場合）、None（取得できない場合）
+        """
+        try:
+            if self.pipeline is None:
+                return None
+            frames = self.pipeline.poll_for_frames()
+            if frames:
+                return frames
+            return None
+        except Exception:
+            return None
 
     def frame_to_numpy(self, color_frame, depth_frame):
         """
@@ -376,7 +406,7 @@ class BagFileReader:
         """
         複数のピクセル位置の深度値を一括取得（バッチ処理、高速化）
         CUDA使用可能な場合はGPUで処理
-        
+
         研究用途向けの高精度処理:
         - 空間補間: 周囲ピクセルの中央値を使用（ノイズ低減）
         - 外れ値除去: 統計的手法による異常値検出
@@ -411,11 +441,11 @@ class BagFileReader:
             depths.append(depth_m)
 
         return depths
-    
+
     def _get_depth_with_interpolation(self, depth_image, x, y, use_interpolation=True, kernel_size=3, confidence=None):
         """
         深度値を取得（補間オプション付き、研究用途向け高精度処理）
-        
+
         Args:
             depth_image: 深度画像（NumPy配列）
             x: ピクセルX座標（float）
@@ -423,53 +453,53 @@ class BagFileReader:
             use_interpolation: Trueの場合、周囲ピクセルからの補間を適用
             kernel_size: 補間カーネルサイズ（奇数推奨）
             confidence: キーポイントの信頼度（0-1、信頼度が低い場合は補間範囲を拡大）
-        
+
         Returns:
             float: 深度値（メートル）、無効な場合はNone
         """
         x_int = int(round(x))
         y_int = int(round(y))
-        
+
         height, width = depth_image.shape
-        
+
         if x_int < 0 or x_int >= width or y_int < 0 or y_int >= height:
             return None
-        
+
         if use_interpolation and kernel_size >= 3:
             # 信頼度が低い場合は補間範囲を拡大（研究手法: 信頼度に基づく適応的補間）
             if confidence is not None and confidence < 0.5:
                 kernel_size = min(kernel_size + 2, 7)  # 最大7x7
-            
+
             # 周囲ピクセルから深度値を補間（ノイズ低減のため中央値を使用）
             half_kernel = kernel_size // 2
             x_min = max(0, x_int - half_kernel)
             x_max = min(width, x_int + half_kernel + 1)
             y_min = max(0, y_int - half_kernel)
             y_max = min(height, y_int + half_kernel + 1)
-            
+
             # 周囲の深度値を取得
             neighborhood = depth_image[y_min:y_max, x_min:x_max]
             valid_depths = neighborhood[neighborhood > 0]  # 無効な深度値（0）を除外
-            
+
             if len(valid_depths) == 0:
                 return None
-            
+
             # 外れ値除去: IQR（四分位範囲）法を使用
             if len(valid_depths) >= 5:
                 q1 = np.percentile(valid_depths, 25)
                 q3 = np.percentile(valid_depths, 75)
                 iqr = q3 - q1
-                
+
                 if iqr > 0:
                     # IQR法による外れ値の閾値
                     lower_bound = q1 - 1.5 * iqr
                     upper_bound = q3 + 1.5 * iqr
-                    
+
                     # 外れ値を除去
                     filtered_depths = valid_depths[
                         (valid_depths >= lower_bound) & (valid_depths <= upper_bound)
                     ]
-                    
+
                     if len(filtered_depths) > 0:
                         # 中央値を使用（ノイズに対してロバスト）
                         depth_value = np.median(filtered_depths)
@@ -485,13 +515,13 @@ class BagFileReader:
         else:
             # 補間なし: 単一ピクセルの深度値をそのまま使用
             depth_value = depth_image[y_int, x_int]
-            
+
             if depth_value == 0:
                 return None
-        
+
         # スケールを適用してメートル単位に変換
         depth_m = float(depth_value) * self.depth_scale
-        
+
         return depth_m
 
     def pixels_to_3d_batch(self, points, depths):
@@ -510,7 +540,7 @@ class BagFileReader:
             return [None] * len(points)
 
         intrinsics = self.intrinsics
-        
+
         # CUDA使用可能な場合はベクトル化処理
         if CUPY_AVAILABLE and len(points) > 5:
             try:
@@ -518,42 +548,48 @@ class BagFileReader:
                 valid_points = []
                 valid_depths = []
                 valid_indices = []
-                
+
                 for i, ((px, py), d) in enumerate(zip(points, depths)):
                     if d is not None and d > 0:
                         valid_points.append((px, py))
                         valid_depths.append(d)
                         valid_indices.append(i)
-                
+
                 if valid_points:
                     # CuPy配列に変換
                     pixel_x = cp.array([p[0] for p in valid_points], dtype=cp.float32)
                     pixel_y = cp.array([p[1] for p in valid_points], dtype=cp.float32)
                     depth = cp.array(valid_depths, dtype=cp.float32)
-                    
+
                     # ベクトル演算で一括計算
                     x = (pixel_x - intrinsics.ppx) / intrinsics.fx
                     y = (pixel_y - intrinsics.ppy) / intrinsics.fy
-                    
+
                     X = x * depth
                     Y = y * depth
                     Z = depth
-                    
+
                     # CPUに転送
                     X_cpu = cp.asnumpy(X)
                     Y_cpu = cp.asnumpy(Y)
                     Z_cpu = cp.asnumpy(Z)
-                    
+
                     # 結果をリストに格納
                     results = [None] * len(points)
                     for idx, (x_val, y_val, z_val) in enumerate(zip(X_cpu, Y_cpu, Z_cpu)):
                         results[valid_indices[idx]] = (float(x_val), float(y_val), float(z_val))
-                    
+
                     return results
-            except Exception:
+            except Exception as e:
                 # CUDA処理に失敗した場合はCPUで処理（フォールバック）
+                # エラーメッセージは最初の一回のみ表示（ログが多くなりすぎるのを防ぐ）
+                global _cuda_fallback_warned
+                if not _cuda_fallback_warned:
+                    print(f"Warning: CuPy CUDA processing failed: {e}")
+                    print(f"Falling back to CPU mode for depth calculations")
+                    _cuda_fallback_warned = True
                 pass
-        
+
         # CPU処理（フォールバックまたは小規模データ）
         results = []
         for (pixel_x, pixel_y), depth in zip(points, depths):

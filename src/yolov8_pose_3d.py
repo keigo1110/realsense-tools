@@ -112,17 +112,41 @@ class YOLOv8PoseDetector:
             import torch
 
             if torch.cuda.is_available():
-                # CUDAが利用可能な場合、明示的に0番目のGPUを指定
-                device = "cuda:0"
-                # CUDAデバイス情報を表示
-                print(f"  CUDA available: {torch.cuda.get_device_name(0)}")
-                print(f"  CUDA version: {torch.version.cuda}")
-                return device
+                # CUDAが利用可能な場合、実際にアクセスできるか確認
+                try:
+                    device = "cuda:0"
+                    # CUDAデバイスにアクセスして動作確認
+                    test_tensor = torch.zeros(1).to(device)
+                    del test_tensor
+                    # CUDAデバイス情報を表示
+                    print(f"  CUDA available: {torch.cuda.get_device_name(0)}")
+                    print(f"  CUDA version: {torch.version.cuda}")
+                    return device
+                except Exception as e:
+                    # CUDAアクセスに失敗した場合はCPUにフォールバック
+                    print(f"  Warning: CUDA device access failed: {e}")
+                    print(f"  Falling back to CPU mode")
+                    return "cpu"
             elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-                return "mps"  # Apple Silicon GPU
+                # Apple Silicon GPU
+                try:
+                    device = "mps"
+                    # MPSデバイスにアクセスして動作確認
+                    test_tensor = torch.zeros(1).to(device)
+                    del test_tensor
+                    print(f"  Apple Silicon GPU (MPS) available")
+                    return device
+                except Exception as e:
+                    # MPSアクセスに失敗した場合はCPUにフォールバック
+                    print(f"  Warning: MPS device access failed: {e}")
+                    print(f"  Falling back to CPU mode")
+                    return "cpu"
             else:
+                print(f"  Using CPU mode (no GPU available)")
                 return "cpu"
-        except:
+        except Exception as e:
+            print(f"  Warning: Device detection failed: {e}")
+            print(f"  Falling back to CPU mode")
             return "cpu"
 
     def load_model(self):
@@ -155,13 +179,23 @@ class YOLOv8PoseDetector:
                 print(f"Model not found. Will download to: {model_path}")
 
             # YOLOv8-Poseモデルを読み込み（存在しない場合は自動ダウンロード）
-            self.model = YOLO(model_path)
+            try:
+                self.model = YOLO(model_path)
+            except Exception as e:
+                # CUDA/MPSデバイスでのモデルロードに失敗した場合はCPUにフォールバック
+                if self.device != "cpu" and ("CUDA" in str(e) or "cuda" in str(e).lower() or "MPS" in str(e) or "mps" in str(e).lower()):
+                    print(f"Warning: Failed to load model on {self.device}: {e}")
+                    print(f"Falling back to CPU mode")
+                    self.device = "cpu"
+                    self.model = YOLO(model_path)
+                else:
+                    raise
 
             # torch.compileはultralyticsとの互換性問題があるため無効化
             # 代わりに、YOLOv8の推論時にhalf精度とdevice指定で高速化を行う
             # 注意: torch.compileを使用すると'OptimizedModule'オブジェクトが
             # subscriptableでなくなり、ultralytics内部のコードでエラーが発生する
-            
+
             print(f"YOLOv8-Pose model loaded successfully")
             return True
 
@@ -206,15 +240,35 @@ class YOLOv8PoseDetector:
             # 640ピクセル以下の場合はそのまま、それ以上は640にリサイズ
             imgsz = min(640, max(320, (max_dim // 32) * 32))  # 32の倍数に丸める
 
-            results = self.model(
-                image_rgb,
-                verbose=False,
-                device=self.device,
-                half=half,  # 半精度推論（GPU/MPS使用時、約2倍高速化）
-                imgsz=imgsz,  # 動的に最適化された入力サイズ
-                max_det=1,  # 最大検出数を1に制限（ジャンプ分析では1人のみ、高速化）
-                conf=0.25,  # 信頼度閾値（デフォルトより低めに設定して検出確率を上げる）
-            )
+            # 推論実行（CUDAエラー時はCPUにフォールバック）
+            try:
+                results = self.model(
+                    image_rgb,
+                    verbose=False,
+                    device=self.device,
+                    half=half,  # 半精度推論（GPU/MPS使用時、約2倍高速化）
+                    imgsz=imgsz,  # 動的に最適化された入力サイズ
+                    max_det=1,  # 最大検出数を1に制限（ジャンプ分析では1人のみ、高速化）
+                    conf=0.25,  # 信頼度閾値（デフォルトより低めに設定して検出確率を上げる）
+                )
+            except Exception as e:
+                # CUDA/MPSデバイスでの推論に失敗した場合はCPUにフォールバック
+                if self.device != "cpu" and ("CUDA" in str(e) or "cuda" in str(e).lower() or "MPS" in str(e) or "mps" in str(e).lower()):
+                    print(f"Warning: Inference failed on {self.device}: {e}")
+                    print(f"Falling back to CPU mode for inference")
+                    self.device = "cpu"
+                    # CPUモードでは半精度推論を無効化
+                    results = self.model(
+                        image_rgb,
+                        verbose=False,
+                        device=self.device,
+                        half=False,  # CPUでは半精度推論を無効化
+                        imgsz=imgsz,
+                        max_det=1,
+                        conf=0.25,
+                    )
+                else:
+                    raise
 
             if not results or len(results) == 0:
                 return None
@@ -260,6 +314,82 @@ class YOLOv8PoseDetector:
             print(f"Error during YOLOv8-Pose inference: {e}")
             import traceback
 
+            traceback.print_exc()
+            return None
+
+    def detect_keypoints_multi(self, image, max_det=5, conf=0.25):
+        """
+        画像から複数人物のkeypointsを検出（18キーポイント形式）
+
+        Args:
+            image: BGR画像
+            max_det: 最大検出人数
+            conf: 信頼度閾値
+
+        Returns:
+            list[list[(x, y, conf)]] または None
+        """
+        if self.model is None:
+            print("Error: Model not loaded. Call load_model() first.")
+            return None
+
+        h, w = image.shape[:2]
+
+        try:
+            image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+
+            is_cuda = self.device.startswith("cuda") if isinstance(self.device, str) else False
+            is_mps = self.device == "mps"
+            half = is_cuda or is_mps
+
+            max_dim = max(h, w)
+            imgsz = min(640, max(320, (max_dim // 32) * 32))
+
+            try:
+                results = self.model(
+                    image_rgb,
+                    verbose=False,
+                    device=self.device,
+                    half=half,
+                    imgsz=imgsz,
+                    max_det=int(max(1, max_det)),
+                    conf=conf,
+                )
+            except Exception as e:
+                if self.device != "cpu" and ("cuda" in str(e).lower() or "mps" in str(e).lower()):
+                    self.device = "cpu"
+                    results = self.model(
+                        image_rgb,
+                        verbose=False,
+                        device=self.device,
+                        half=False,
+                        imgsz=imgsz,
+                        max_det=int(max(1, max_det)),
+                        conf=conf,
+                    )
+                else:
+                    raise
+
+            if not results or len(results) == 0:
+                return None
+
+            result = results[0]
+            if result.keypoints is None or len(result.keypoints.data) == 0:
+                return None
+
+            keypoints_data = result.keypoints.data.cpu().numpy()  # (num_people, 17, 3)
+            if len(keypoints_data) == 0:
+                return None
+
+            persons_18 = []
+            for person_kpts in keypoints_data:
+                persons_18.append(self._convert_17_to_18(person_kpts, w, h))
+
+            return persons_18 if persons_18 else None
+
+        except Exception as e:
+            print(f"Error during YOLOv8-Pose multi-person inference: {e}")
+            import traceback
             traceback.print_exc()
             return None
 

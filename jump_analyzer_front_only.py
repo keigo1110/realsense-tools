@@ -227,6 +227,59 @@ def resize_image(image, new_width, new_height):
     return cv2.resize(image, (new_width, new_height))
 
 
+def pick_nearest_person_by_depth(keypoints_list, depth_frame, bag_reader, image_shape, border_threshold=8):
+    """
+    複数人物のkeypoints候補から、点群（深度）の中央値が最も近い人物を選択
+
+    Args:
+        keypoints_list: [[(x,y,conf)*18], ...]
+        depth_frame: rs.depth_frame
+        bag_reader: BagFileReader（バッチ深度取得API使用）
+        image_shape: (H, W)
+        border_threshold: 画像端のマージン
+
+    Returns:
+        最良人物のkeypoints（18要素）またはNone
+    """
+    if not keypoints_list:
+        return None
+
+    h, w = image_shape[:2]
+    best_idx = -1
+    best_median = None
+
+    for idx, kps in enumerate(keypoints_list):
+        # 有効点抽出
+        valid_points = []
+        for kp in kps:
+            if kp and kp[0] is not None and kp[1] is not None and kp[2] > 0.1:
+                x, y = kp[0], kp[1]
+                if border_threshold <= x < w - border_threshold and border_threshold <= y < h - border_threshold:
+                    valid_points.append((x, y))
+
+        if not valid_points:
+            continue
+
+        # 深度をバッチ取得
+        depths = bag_reader.get_depth_at_points_batch(
+            depth_frame,
+            valid_points,
+            use_interpolation=True,
+            kernel_size=3,
+            confidences=[1.0] * len(valid_points),
+        )
+        valid_depths = [d for d in depths if d is not None and d > 0]
+        if not valid_depths:
+            continue
+
+        median_depth = float(np.median(valid_depths))
+        if best_median is None or median_depth < best_median:
+            best_median = median_depth
+            best_idx = idx
+
+    return keypoints_list[best_idx] if best_idx >= 0 else None
+
+
 def convert_keypoints_to_dict(keypoints_2d, keypoints_3d):
     """
     keypointsを辞書形式に変換
@@ -1721,8 +1774,15 @@ Examples:
             # ポーズ推定の時間を測定
             pose_start = time.time()
             
-            # cam0のキーポイント検出
-            keypoints_2d_cam0 = yolo_pose.detect_keypoints(inference_image)
+            # cam0のキーポイント検出（複数人→最近傍人物を選択）
+            persons_cam0 = yolo_pose.detect_keypoints_multi(inference_image, max_det=5, conf=0.20)
+            keypoints_2d_cam0 = None
+            if persons_cam0:
+                # 深度から最近傍人物を選択
+                keypoints_2d_cam0 = pick_nearest_person_by_depth(persons_cam0, depth_frame, bag_reader, color_image.shape)
+            else:
+                # フォールバック（旧API）
+                keypoints_2d_cam0 = yolo_pose.detect_keypoints(inference_image)
             pose_time_cam0 = time.time() - pose_start
             
             # デュアルモード: cam1のキーポイント検出
@@ -1746,7 +1806,11 @@ Examples:
                         resize_scale_y1 = color_image1.shape[0] / new_height1
                     
                     pose_start_cam1 = time.time()
-                    keypoints_2d_cam1 = yolo_pose.detect_keypoints(inference_image1)
+                    persons_cam1 = yolo_pose.detect_keypoints_multi(inference_image1, max_det=5, conf=0.20)
+                    if persons_cam1:
+                        keypoints_2d_cam1 = pick_nearest_person_by_depth(persons_cam1, depth_frame1, bag_reader_cam1, color_image1.shape)
+                    else:
+                        keypoints_2d_cam1 = yolo_pose.detect_keypoints(inference_image1)
                     pose_time_cam1 = time.time() - pose_start_cam1
                     
                     # keypoints座標を元の画像サイズにスケール
