@@ -61,11 +61,14 @@ except:
 
 from src.realsense_utils import BagFileReader, CUPY_AVAILABLE
 from src.yolov8_pose_3d import YOLOv8PoseDetector, COCO_KEYPOINTS
+from src.vitpose_3d import ViTPoseDetector
 from src.jump_detector import JumpDetector
 from src.visualizer import JumpVisualizer, create_3d_keypoint_animation
 from src.keypoint_smoother import KeypointSmoother
 from src.kalman_filter_3d import KalmanSmoother
 from src.floor_detector import FloorDetector
+from src.person_tracker import PersonTracker
+from src.person_tracker_norfair import PersonTrackerNorFair, NORFAIR_AVAILABLE
 
 import pyrealsense2 as rs
 
@@ -547,7 +550,13 @@ def plot_keypoint_coordinate_timeline(all_frames_data, output_dir, floor_detecto
     print(f"Keypoint Z coordinate timeline plot saved to: {z_path}")
 
 
-def plot_jump_trajectory(trajectory, statistics, output_dir, floor_detector=None):
+def plot_jump_trajectory(
+    trajectory,
+    statistics,
+    output_dir,
+    floor_detector=None,
+    baseline_height=None,
+):
     """
     ジャンプ軌跡を可視化（水平面と高さ-時間グラフ）
 
@@ -566,6 +575,7 @@ def plot_jump_trajectory(trajectory, statistics, output_dir, floor_detector=None
     positions_x = []
     positions_y = []
     positions_z = []
+    heights_absolute = []
     frames = []
 
     for point in trajectory:
@@ -593,6 +603,30 @@ def plot_jump_trajectory(trajectory, statistics, output_dir, floor_detector=None
             positions_y.append(pos[1])  # Y軸は高さ（RealSense座標系では下が正）
             positions_z.append(pos[2])
             frames.append(frame)
+
+            height_abs = None
+            distances = point.get("keypoint_distances_to_floor")
+            if distances:
+                if distances.get("MidHip") is not None:
+                    height_abs = distances["MidHip"]
+                else:
+                    hip_vals = [
+                        distances.get("LHip"),
+                        distances.get("RHip"),
+                    ]
+                    hip_vals = [v for v in hip_vals if v is not None]
+                    if hip_vals:
+                        height_abs = float(sum(hip_vals) / len(hip_vals))
+            if (
+                height_abs is None
+                and floor_detector
+                and floor_detector.floor_plane is not None
+            ):
+                try:
+                    height_abs = floor_detector.distance_to_floor(pos)
+                except Exception:
+                    height_abs = None
+            heights_absolute.append(height_abs)
 
     if not positions_x:
         print("Warning: No valid trajectory positions found for jump trajectory plot")
@@ -702,23 +736,6 @@ def plot_jump_trajectory(trajectory, statistics, output_dir, floor_detector=None
                         ),
                     )
 
-                    # 離陸点を描画（オレンジの三角）- 最初のジャンプのみ凡例に追加
-                    if takeoff_idx is not None:
-                        ax.scatter(
-                            [positions_x[takeoff_idx]],
-                            [positions_z[takeoff_idx]],
-                            c="orange",
-                            s=100,
-                            marker="^",
-                            edgecolors="black",
-                            linewidths=1.5,
-                            zorder=5,
-                            label=(
-                                "Takeoff"
-                                if not USE_JAPANESE_LABELS
-                                else "離陸" if i == 0 else ""
-                            ),
-                        )
 
                     # 着地点を描画（赤の四角）- 最初のジャンプのみ凡例に追加
                     ax.scatter(
@@ -766,21 +783,33 @@ def plot_jump_trajectory(trajectory, statistics, output_dir, floor_detector=None
     # RealSense座標系ではY軸が下向きが正なので、反転して上向きが正になるようにする
     fig, ax = plt.subplots(figsize=(14, 8))
 
-    # Y座標を反転（RealSense座標系: 下向きが正 → 表示座標系: 上向きが正）
-    # 基準値を求める（床面の高さ = 最大Y値）
-    if positions_y:
-        y_min = min(positions_y)
+    use_absolute_heights = any(
+        h is not None and not (isinstance(h, float) and np.isnan(h))
+        for h in heights_absolute
+    )
+
+    if use_absolute_heights:
+        heights = []
+        for h in heights_absolute:
+            if h is None or (isinstance(h, float) and np.isnan(h)):
+                heights.append(np.nan)
+            else:
+                if baseline_height is not None:
+                    heights.append(h - baseline_height)
+                else:
+                    heights.append(h)
+        baseline_label = 0.0 if baseline_height is not None else None
+    elif positions_y:
         y_max = max(positions_y)
-        # RealSense座標系ではYが大きいほど下にあるので、最大Y値が床面
-        # 床検出が有効な場合は、より正確な床面の高さを使用することも可能
-        # ここでは最大Y値を床面として使用（軌跡データの中で最も低い位置）
-        y_floor = y_max  # 最大Y値を床面の基準とする（RealSense座標系では下が正）
-        # Y座標を反転: 床からの距離として表示（上向きが正、0以上）
-        # y_floor - y で計算: yが大きい（下）→0に近い、yが小さい（上）→大きな正の値
-        heights = [y_floor - y for y in positions_y]
+        heights = [y_max - y for y in positions_y]
+        if baseline_height is not None:
+            heights = [h - baseline_height for h in heights]
+            baseline_label = 0.0
+        else:
+            baseline_label = None
     else:
         heights = []
-        y_floor = 0
+        baseline_label = None
 
     # 有効なタイムスタンプがあるかチェック
     valid_timestamps = [t for t in timestamps if t is not None]
@@ -802,6 +831,17 @@ def plot_jump_trajectory(trajectory, statistics, output_dir, floor_detector=None
         linewidth=1,
         label="Full trajectory" if not USE_JAPANESE_LABELS else "全軌跡",
     )
+    if baseline_label is not None:
+        ax.axhline(
+            0.0,
+            color="black",
+            linestyle="--",
+            linewidth=1,
+            alpha=0.6,
+            label="Baseline 0"
+            if not USE_JAPANESE_LABELS
+            else "基準線（0）",
+        )
 
     # ジャンプ中の軌跡を強調
     if jumps:
@@ -852,10 +892,15 @@ def plot_jump_trajectory(trajectory, statistics, output_dir, floor_detector=None
                             break
 
                     # 開始点を描画（反転済みの高さを使用）- 最初のジャンプのみ凡例に追加
-                    if start_idx < len(plot_x) and start_idx < len(heights):
+                    if (
+                        start_idx < len(plot_x)
+                        and start_idx < len(heights)
+                        and not np.isnan(heights[start_idx])
+                    ):
+                        start_height = heights[start_idx]
                         ax.scatter(
                             [plot_x[start_idx]],
-                            [heights[start_idx]],
+                            [start_height],
                             c="green",
                             s=100,
                             marker="o",
@@ -870,32 +915,17 @@ def plot_jump_trajectory(trajectory, statistics, output_dir, floor_detector=None
                         )
 
                     # 離陸点を描画（反転済みの高さを使用）- 最初のジャンプのみ凡例に追加
-                    if (
-                        takeoff_idx is not None
-                        and takeoff_idx < len(plot_x)
-                        and takeoff_idx < len(heights)
-                    ):
-                        ax.scatter(
-                            [plot_x[takeoff_idx]],
-                            [heights[takeoff_idx]],
-                            c="orange",
-                            s=100,
-                            marker="^",
-                            edgecolors="black",
-                            linewidths=1.5,
-                            zorder=5,
-                            label=(
-                                "Takeoff"
-                                if not USE_JAPANESE_LABELS
-                                else "離陸" if i == 0 else ""
-                            ),
-                        )
 
                     # 着地点を描画（反転済みの高さを使用）- 最初のジャンプのみ凡例に追加
-                    if end_idx < len(plot_x) and end_idx < len(heights):
+                    if (
+                        end_idx < len(plot_x)
+                        and end_idx < len(heights)
+                        and not np.isnan(heights[end_idx])
+                    ):
+                        landing_height = heights[end_idx]
                         ax.scatter(
                             [plot_x[end_idx]],
-                            [heights[end_idx]],
+                            [landing_height],
                             c="red",
                             s=100,
                             marker="s",
@@ -990,6 +1020,7 @@ def merge_config_with_args(config, args):
         "input": "input",
         "output": "output",
         "model_dir": "model_dir",
+        "pose_model": "pose_model",
         "model_name": "model_name",
         "threshold_vertical": "threshold_vertical",
         "threshold_horizontal": "threshold_horizontal",
@@ -1012,6 +1043,8 @@ def merge_config_with_args(config, args):
         "resize_factor": "resize_factor",
         "minimal_data": "minimal_data",
         "dual": "dual",
+        "waist_baseline_height": "waist_baseline_height",
+        "waist_zero_epsilon": "waist_zero_epsilon",
     }
 
     for config_key, arg_name in config_to_args_map.items():
@@ -1040,7 +1073,7 @@ def merge_config_with_args(config, args):
                     setattr(args, arg_name, None)
                 else:
                     setattr(args, arg_name, config[config_key])
-            # ブール値の場合は、設定ファイルの値を優先（明示的にFalseでも有効）
+            # ブール値の場合は、コマンドライン引数が優先（明示的に指定された場合）
             elif config_key in [
                 "no_video",
                 "no_3d_animation",
@@ -1051,7 +1084,14 @@ def merge_config_with_args(config, args):
                 "minimal_data",
                 "dual",
             ]:
-                setattr(args, arg_name, config[config_key])
+                # コマンドライン引数が明示的に指定されている場合はそれを優先
+                # action="store_true"の場合、デフォルトはFalseなので、Trueの場合は明示的に指定されたと判断
+                if getattr(args, arg_name, False):
+                    # コマンドライン引数がTrueの場合はそのまま使用（上書きしない）
+                    pass
+                else:
+                    # コマンドライン引数がFalseまたは未指定の場合は設定ファイルの値を使用
+                    setattr(args, arg_name, config[config_key])
             # Noneがデフォルトの値
             elif current_value is None and config[config_key] is not None:
                 setattr(args, arg_name, config[config_key])
@@ -1118,10 +1158,17 @@ Examples:
         help="Directory for YOLOv8-Pose model files (default: models)",
     )
     parser.add_argument(
+        "--pose-model",
+        type=str,
+        default="yolov8",
+        choices=["yolov8", "vitpose"],
+        help="Pose estimation model type: 'yolov8' (fast) or 'vitpose' (highest accuracy) (default: yolov8)",
+    )
+    parser.add_argument(
         "--model-name",
         type=str,
         default="yolov8x-pose.pt",
-        help="YOLOv8-Pose model name (yolov8n-pose.pt, yolov8s-pose.pt, etc.) (default: yolov8x-pose.pt)",
+        help="Model name: for YOLOv8 (yolov8n-pose.pt, yolov8s-pose.pt, etc.) or for ViTPose (vitpose-huge, vitpose-large, etc.) (default: yolov8x-pose.pt)",
     )
     parser.add_argument(
         "--threshold-vertical",
@@ -1237,6 +1284,23 @@ Examples:
         action="store_true",
         help="Enable dual camera mode: if input is a directory, automatically find *_metadata.json file",
     )
+    parser.add_argument(
+        "--waist-baseline-height",
+        type=float,
+        default=None,
+        help="Baseline waist height from floor in meters (set via config to enable zero-crossing jump detection)",
+    )
+    parser.add_argument(
+        "--waist-zero-epsilon",
+        type=float,
+        default=0.01,
+        help="Deadband width around the waist baseline (meters) when checking zero-crossings (default: 0.01m)",
+    )
+    parser.add_argument(
+        "--use-norfair-tracking",
+        action="store_true",
+        help="Use NorFair library for person tracking (more robust, requires: pip install norfair)",
+    )
 
     args = parser.parse_args()
 
@@ -1336,22 +1400,32 @@ Examples:
             sys.exit(1)
 
     print("=" * 60)
-    print("Jump Analyzer - YOLOv8-Pose 3D Analysis")
+    pose_model_type = args.pose_model.lower()
+    print(f"Jump Analyzer - {pose_model_type.upper()} 3D Analysis")
     print("=" * 60)
     print(f"Input file: {bag_file_path}")
     print(f"Output directory: {args.output}")
+    print(f"Pose model: {pose_model_type}")
     print()
 
     # モデルディレクトリを作成（存在しない場合）
     model_dir = Path(args.model_dir)
     model_dir.mkdir(parents=True, exist_ok=True)
 
-    # YOLOv8-Poseモデルの読み込み
-    print("Loading YOLOv8-Pose model...")
-    yolo_pose = YOLOv8PoseDetector(model_name=args.model_name, model_dir=str(model_dir))
-    if not yolo_pose.load_model():
-        print("Error: Failed to load YOLOv8-Pose model", file=sys.stderr)
-        sys.exit(1)
+    # 姿勢推定モデルの読み込み
+    pose_detector = None
+    if pose_model_type == "vitpose":
+        print(f"Loading ViTPose model ({args.model_name})...")
+        pose_detector = ViTPoseDetector(model_name=args.model_name, model_dir=str(model_dir))
+        if not pose_detector.load_model():
+            print("Error: Failed to load ViTPose model", file=sys.stderr)
+            sys.exit(1)
+    else:  # yolov8 (default)
+        print(f"Loading YOLOv8-Pose model ({args.model_name})...")
+        pose_detector = YOLOv8PoseDetector(model_name=args.model_name, model_dir=str(model_dir))
+        if not pose_detector.load_model():
+            print("Error: Failed to load YOLOv8-Pose model", file=sys.stderr)
+            sys.exit(1)
 
     # バグファイルの読み込み
     bag_reader = None
@@ -1460,16 +1534,38 @@ Examples:
     else:
         print("Floor detection disabled: Using traditional height-based detection")
 
-    # ジャンプ検出器の初期化
-    jump_detector = JumpDetector(
-        threshold_vertical=args.threshold_vertical,
-        threshold_horizontal=args.threshold_horizontal,
-        min_jump_height=args.min_jump_height,
-        min_air_time=args.min_air_time,
-        floor_detector=floor_detector,
-        use_floor_detection=not args.no_floor_detection,
-    )
-
+    # 複数人トラッキングの初期化
+    if args.use_norfair_tracking:
+        if not NORFAIR_AVAILABLE:
+            print("Error: NorFair tracking requested but NorFair is not installed.", file=sys.stderr)
+            print("Install with: pip install norfair", file=sys.stderr)
+            sys.exit(1)
+        print("Using NorFair for person tracking (robust tracking library)")
+        person_tracker = PersonTrackerNorFair(
+            distance_threshold=200,  # 人物の動きに対応できるよう大きく設定
+            hit_counter_max=100,  # 100フレーム（約3.3秒）まで保持（より早く失効、誤検出を防ぐ）
+            initialization_delay=50,  # 50フレーム連続検出が必要（ノイズ検出を防ぐ、より厳格に）
+            min_confidence=0.45,  # 信頼度の低い検出を除外（より厳格に）
+            min_valid_keypoints=10,  # 最低10つのキーポイントが必要（より厳格に）
+            max_3d_distance=0.5,  # マッチング時の最大3D距離を0.5mに制限（より厳格に）
+            valid_3d_bounds=[(-2.0, 2.0), (-1.0, 2.0), (1.0, 5.0)]  # 有効な3D位置の範囲
+        )
+    else:
+        print("Using custom PersonTracker (IoU + keypoint-based)")
+        person_tracker = PersonTracker(max_age=60, min_iou=0.15, keypoint_match_threshold=0.5)
+    
+    # 各人ごとのジャンプ検出器（辞書で管理）
+    person_jump_detectors = {}  # {person_id: JumpDetector}
+    
+    # 各人ごとの平滑化器（辞書で管理）
+    person_smoothers = {}  # {person_id: smoother}
+    
+    # 各人ごとのデータ保存用リスト（辞書で管理）
+    person_all_frames_data = {}  # {person_id: [frame_data, ...]}
+    
+    # 各人ごとの可視化動画ライター（辞書で管理）
+    person_video_writers = {}  # {person_id: VideoWriter}
+    
     # 可視化器の初期化
     visualizer = JumpVisualizer()
 
@@ -1666,33 +1762,23 @@ Examples:
 
             # 床検出（最初の数フレームで実行、フレームスキッピング前）
             if floor_detector and not floor_detection_done:
-                # フレームスキッピングを考慮せず、実際の読み込みフレーム数で判定
-                if frame_num <= 100:  # 最初の100フレームで床検出を試行
-                    # 床検出を試行（毎フレーム試行、成功したら終了）
-                    if floor_detector.detect_floor_from_depth(
-                        depth_frame,
-                        bag_reader.depth_scale,
-                        bag_reader.depth_intrinsics or bag_reader.intrinsics,
-                    ):
-                        floor_plane, floor_normal, floor_height = (
-                            floor_detector.get_floor_plane()
+                if floor_detector.detect_floor_from_depth(
+                    depth_frame,
+                    bag_reader.depth_scale,
+                    bag_reader.depth_intrinsics or bag_reader.intrinsics,
+                ):
+                    floor_plane, floor_normal, floor_height = floor_detector.get_floor_plane()
+                    if floor_plane is not None:
+                        floor_detection_done = True
+                        print(f"\n✓ Floor detected at frame {frame_num}!")
+                        print(f"  Floor height (Y): {floor_height:.3f}m")
+                        print(
+                            f"  Floor normal: ({floor_normal[0]:.3f}, {floor_normal[1]:.3f}, {floor_normal[2]:.3f})"
                         )
-                        if floor_plane is not None:
-                            floor_detection_done = True
-                            print(f"\n✓ Floor detected at frame {frame_num}!")
-                            print(f"  Floor height (Y): {floor_height:.3f}m")
-                            print(
-                                f"  Floor normal: ({floor_normal[0]:.3f}, {floor_normal[1]:.3f}, {floor_normal[2]:.3f})"
-                            )
-                elif frame_num > 100:
-                    # 100フレーム試しても検出できない場合は警告し、従来方式に切り替え
-                    print("\n⚠ Warning: Floor detection failed after 100 frames.")
-                    print("  Continuing with traditional height-based detection.")
-                    floor_detection_done = True
-                    # 床検出を無効化
-                    if jump_detector:
-                        jump_detector.use_floor_detection = False
-                    floor_detector = None
+                elif frame_num % 200 == 0:
+                    print(
+                        f"\n[INFO] Still searching for floor plane... (frame {frame_num})"
+                    )
 
             # フレームスキッピング
             if frame_num % args.frame_skip != 0:
@@ -1721,9 +1807,81 @@ Examples:
             # ポーズ推定の時間を測定
             pose_start = time.time()
             
-            # cam0のキーポイント検出
-            keypoints_2d_cam0 = yolo_pose.detect_keypoints(inference_image)
+            # cam0のキーポイント検出（複数人、信頼度を上げてノイズ検出を減らす）
+            persons_cam0 = pose_detector.detect_keypoints_multi(inference_image, max_det=3, conf=0.40)
             pose_time_cam0 = time.time() - pose_start
+            
+            # まず、各検出人物の3D位置を計算（トラッキング用）
+            # トラッキングで3D位置とキーポイント類似度を考慮するため、事前に3D位置を計算
+            persons_3d_list = []
+            if persons_cam0 and args.use_norfair_tracking:
+                image_height, image_width = color_image.shape[:2]
+                border_threshold = 8
+                
+                for kp_2d_raw in persons_cam0:
+                    # キーポイント座標を元の画像サイズにスケール
+                    kp_2d = kp_2d_raw
+                    if args.resize_factor < 1.0:
+                        kp_2d = [
+                            (
+                                (kp[0] * resize_scale_x, kp[1] * resize_scale_y, kp[2])
+                                if kp[0] is not None and kp[1] is not None
+                                else kp
+                            )
+                            for kp in kp_2d_raw
+                        ]
+                    
+                    # 3Dキーポイントを計算
+                    valid_data = [
+                        (kp_name, kp[0], kp[1], kp[2])
+                        for kp_name, kp in zip(COCO_KEYPOINTS, kp_2d)
+                        if (
+                            kp[0] is not None
+                            and kp[1] is not None
+                            and kp[2] > 0.1
+                            and border_threshold <= kp[0] < image_width - border_threshold
+                            and border_threshold <= kp[1] < image_height - border_threshold
+                        )
+                    ]
+                    
+                    if valid_data:
+                        valid_points = [(x, y) for _, x, y, _ in valid_data]
+                        kp_confidences = [conf for _, _, _, conf in valid_data]
+                        depths = bag_reader.get_depth_at_points_batch(
+                            depth_frame,
+                            valid_points,
+                            use_interpolation=not args.no_depth_interpolation,
+                            kernel_size=(
+                                args.depth_kernel_size if args.depth_kernel_size % 2 == 1 else 3
+                            ),
+                            confidences=kp_confidences,
+                        )
+                        coords_3d = bag_reader.pixels_to_3d_batch(valid_points, depths)
+                        valid_coords_dict = {
+                            kp_name: (
+                                coords_3d[i] if coords_3d[i] is not None else (None, None, None)
+                            )
+                            for i, (kp_name, _, _, _) in enumerate(valid_data)
+                        }
+                        keypoints_3d = {
+                            kp_name: valid_coords_dict.get(kp_name, (None, None, None))
+                            for kp_name in COCO_KEYPOINTS
+                        }
+                    else:
+                        keypoints_3d = {
+                            kp_name: (None, None, None) for kp_name in COCO_KEYPOINTS
+                        }
+                    persons_3d_list.append(keypoints_3d)
+            
+            # トラッキングで各人にIDを割り当て（3D位置とキーポイント類似度を考慮）
+            tracked_persons_cam0 = []
+            if persons_cam0:
+                if args.use_norfair_tracking:
+                    # NorFairトラッキング: 3D位置とキーポイント類似度を考慮
+                    tracked_persons_cam0 = person_tracker.update(persons_cam0, frame_num, persons_3d_list if persons_3d_list else None)
+                else:
+                    # カスタムトラッキング
+                    tracked_persons_cam0 = person_tracker.update(persons_cam0, frame_num)
             
             # デュアルモード: cam1のキーポイント検出
             keypoints_2d_cam1 = None
@@ -1746,7 +1904,7 @@ Examples:
                         resize_scale_y1 = color_image1.shape[0] / new_height1
                     
                     pose_start_cam1 = time.time()
-                    keypoints_2d_cam1 = yolo_pose.detect_keypoints(inference_image1)
+                    keypoints_2d_cam1 = pose_detector.detect_keypoints(inference_image1)
                     pose_time_cam1 = time.time() - pose_start_cam1
                     
                     # keypoints座標を元の画像サイズにスケール
@@ -1773,119 +1931,200 @@ Examples:
             
             pose_time = pose_time_cam0 + pose_time_cam1
 
-            if keypoints_2d_cam0 is None:
+            if not tracked_persons_cam0:
                 continue
 
-            # 3D keypointsを計算（バッチ処理で高速化）
+            # 各人ごとに処理
             depth_start = time.time()
-
-            # cam0の3Dキーポイント計算
             image_height, image_width = color_image.shape[:2]
             border_threshold = 8
-
-            valid_data_cam0 = [
-                (kp_name, kp_2d[0], kp_2d[1], kp_2d[2])
-                for kp_name, kp_2d in zip(COCO_KEYPOINTS, keypoints_2d_cam0)
-                if (
-                    kp_2d[0] is not None
-                    and kp_2d[1] is not None
-                    and kp_2d[2] > 0.1
-                    and border_threshold <= kp_2d[0] < image_width - border_threshold
-                    and border_threshold <= kp_2d[1] < image_height - border_threshold
-                )
-            ]
-
-            if valid_data_cam0:
-                valid_points_cam0 = [(x, y) for _, x, y, _ in valid_data_cam0]
-                kp_confidences_cam0 = [conf for _, _, _, conf in valid_data_cam0]
-                depths_cam0 = bag_reader.get_depth_at_points_batch(
-                    depth_frame,
-                    valid_points_cam0,
-                    use_interpolation=not args.no_depth_interpolation,
-                    kernel_size=(
-                        args.depth_kernel_size if args.depth_kernel_size % 2 == 1 else 3
-                    ),
-                    confidences=kp_confidences_cam0,
-                )
-                coords_3d_cam0 = bag_reader.pixels_to_3d_batch(valid_points_cam0, depths_cam0)
-                valid_coords_dict_cam0 = {
-                    kp_name: (
-                        coords_3d_cam0[i] if coords_3d_cam0[i] is not None else (None, None, None)
-                    )
-                    for i, (kp_name, _, _, _) in enumerate(valid_data_cam0)
-                }
-                keypoints_3d_cam0 = {
-                    kp_name: valid_coords_dict_cam0.get(kp_name, (None, None, None))
-                    for kp_name in COCO_KEYPOINTS
-                }
-            else:
-                keypoints_3d_cam0 = {
-                    kp_name: (None, None, None) for kp_name in COCO_KEYPOINTS
-                }
             
-            # デュアルモード: cam1の3Dキーポイント計算と変換
-            keypoints_3d_cam1 = {kp_name: (None, None, None) for kp_name in COCO_KEYPOINTS}
-            if use_dual_mode and keypoints_2d_cam1 and color_image1 is not None:
-                image_height1, image_width1 = color_image1.shape[:2]
-                valid_data_cam1 = [
+            for person_id, keypoints_2d_cam0 in tracked_persons_cam0:
+                # キーポイント座標を元の画像サイズにスケール
+                if args.resize_factor < 1.0:
+                    keypoints_2d_cam0 = [
+                        (
+                            (kp[0] * resize_scale_x, kp[1] * resize_scale_y, kp[2])
+                            if kp[0] is not None and kp[1] is not None
+                            else kp
+                        )
+                        for kp in keypoints_2d_cam0
+                    ]
+                
+                # 各人ごとのJumpDetectorとSmootherを初期化（初回のみ）
+                if person_id not in person_jump_detectors:
+                    person_jump_detectors[person_id] = JumpDetector(
+                        threshold_vertical=args.threshold_vertical,
+                        threshold_horizontal=args.threshold_horizontal,
+                        min_jump_height=args.min_jump_height,
+                        min_air_time=args.min_air_time,
+                        floor_detector=floor_detector,
+                        use_floor_detection=not args.no_floor_detection,
+                        waist_baseline_height=args.waist_baseline_height,
+                        waist_zero_epsilon=args.waist_zero_epsilon,
+                    )
+                    if args.use_kalman_filter:
+                        person_smoothers[person_id] = KalmanSmoother(
+                            process_noise=args.kalman_process_noise,
+                            measurement_noise=args.kalman_measurement_noise,
+                        )
+                    elif args.smooth_keypoints > 0:
+                        person_smoothers[person_id] = KeypointSmoother(
+                            window_size=args.smooth_keypoints, smoothing_type="moving_average"
+                        )
+                    else:
+                        person_smoothers[person_id] = None
+                    person_all_frames_data[person_id] = []
+                
+                # cam0の3Dキーポイント計算
+                valid_data_cam0 = [
                     (kp_name, kp_2d[0], kp_2d[1], kp_2d[2])
-                    for kp_name, kp_2d in zip(COCO_KEYPOINTS, keypoints_2d_cam1)
+                    for kp_name, kp_2d in zip(COCO_KEYPOINTS, keypoints_2d_cam0)
                     if (
                         kp_2d[0] is not None
                         and kp_2d[1] is not None
                         and kp_2d[2] > 0.1
-                        and border_threshold <= kp_2d[0] < image_width1 - border_threshold
-                        and border_threshold <= kp_2d[1] < image_height1 - border_threshold
+                        and border_threshold <= kp_2d[0] < image_width - border_threshold
+                        and border_threshold <= kp_2d[1] < image_height - border_threshold
                     )
                 ]
-                
-                if valid_data_cam1:
-                    valid_points_cam1 = [(x, y) for _, x, y, _ in valid_data_cam1]
-                    kp_confidences_cam1 = [conf for _, _, _, conf in valid_data_cam1]
-                    depths_cam1 = bag_reader_cam1.get_depth_at_points_batch(
-                        depth_frame1,
-                        valid_points_cam1,
+
+                if valid_data_cam0:
+                    valid_points_cam0 = [(x, y) for _, x, y, _ in valid_data_cam0]
+                    kp_confidences_cam0 = [conf for _, _, _, conf in valid_data_cam0]
+                    depths_cam0 = bag_reader.get_depth_at_points_batch(
+                        depth_frame,
+                        valid_points_cam0,
                         use_interpolation=not args.no_depth_interpolation,
                         kernel_size=(
                             args.depth_kernel_size if args.depth_kernel_size % 2 == 1 else 3
                         ),
-                        confidences=kp_confidences_cam1,
+                        confidences=kp_confidences_cam0,
                     )
-                    coords_3d_cam1_raw = bag_reader_cam1.pixels_to_3d_batch(valid_points_cam1, depths_cam1)
-                    
-                    # cam1座標系からcam0座標系に変換
-                    valid_coords_dict_cam1 = {}
-                    for i, (kp_name, _, _, _) in enumerate(valid_data_cam1):
-                        if coords_3d_cam1_raw[i] is not None:
-                            coords_transformed = transform_point_to_cam0_coords(
-                                coords_3d_cam1_raw[i], T1_to_0
-                            )
-                            valid_coords_dict_cam1[kp_name] = coords_transformed
-                        else:
-                            valid_coords_dict_cam1[kp_name] = (None, None, None)
-                    
-                    keypoints_3d_cam1 = {
-                        kp_name: valid_coords_dict_cam1.get(kp_name, (None, None, None))
+                    coords_3d_cam0 = bag_reader.pixels_to_3d_batch(valid_points_cam0, depths_cam0)
+                    valid_coords_dict_cam0 = {
+                        kp_name: (
+                            coords_3d_cam0[i] if coords_3d_cam0[i] is not None else (None, None, None)
+                        )
+                        for i, (kp_name, _, _, _) in enumerate(valid_data_cam0)
+                    }
+                    keypoints_3d_cam0 = {
+                        kp_name: valid_coords_dict_cam0.get(kp_name, (None, None, None))
                         for kp_name in COCO_KEYPOINTS
                     }
-            
-            # キーポイントを統合
-            if use_dual_mode and T1_to_0 is not None:
-                keypoints_3d = merge_keypoints(
-                    keypoints_3d_cam0,
-                    keypoints_3d_cam1,
-                    keypoints_2d_cam0,
-                    keypoints_2d_cam1
+                else:
+                    keypoints_3d_cam0 = {
+                        kp_name: (None, None, None) for kp_name in COCO_KEYPOINTS
+                    }
+                
+                # デュアルモード: cam1の3Dキーポイント計算と変換（簡略化: 同じperson_idを使用）
+                keypoints_3d_cam1 = {kp_name: (None, None, None) for kp_name in COCO_KEYPOINTS}
+                # 注: デュアルモードの複数人対応は後で実装可能
+                
+                # キーポイントを統合
+                if use_dual_mode and T1_to_0 is not None:
+                    # デュアルモードの複数人対応は後で実装
+                    keypoints_3d = keypoints_3d_cam0
+                    keypoints_2d = keypoints_2d_cam0
+                else:
+                    keypoints_3d = keypoints_3d_cam0
+                    keypoints_2d = keypoints_2d_cam0
+
+                # キーポイント平滑化を適用
+                smoother_person = person_smoothers.get(person_id)
+                if smoother_person is not None:
+                    keypoints_3d = smoother_person.smooth(keypoints_3d)
+
+                # ジャンプ検出
+                timestamp = color_frame.get_timestamp()
+                jump_detector_person = person_jump_detectors[person_id]
+                jump_result = jump_detector_person.update(
+                    processed_frame_count, keypoints_3d, timestamp
                 )
-                keypoints_2d = keypoints_2d_cam0  # 可視化用はcam0を使用
-            else:
-                keypoints_3d = keypoints_3d_cam0
-                keypoints_2d = keypoints_2d_cam0
 
-            # キーポイント平滑化を適用
-            if smoother is not None:
-                keypoints_3d = smoother.smooth(keypoints_3d)
+                # フレームデータを保存（minimal_dataモードではジャンプ検出時のみ）
+                should_save = not args.minimal_data or (
+                    jump_result is not None
+                    and jump_result.get("state") in ["jump_start", "jump_end", "jumping"]
+                )
 
+                if should_save:
+                    # キーポイントの辞書を作成
+                    keypoints_dict = convert_keypoints_to_dict(keypoints_2d, keypoints_3d)
+
+                    # 床からの距離をすべてのキーポイントについて追加（床検出が有効な場合）
+                    if floor_detector and floor_detector.floor_plane is not None:
+                        for kp_name, kp_data in keypoints_dict.items():
+                            if kp_data.get("3d") and kp_data["3d"]["x"] is not None:
+                                kp_coords = (
+                                    kp_data["3d"]["x"],
+                                    kp_data["3d"]["y"],
+                                    kp_data["3d"]["z"],
+                                )
+                                distance = floor_detector.distance_to_floor(kp_coords)
+                                kp_data["distance_to_floor"] = distance
+                            else:
+                                kp_data["distance_to_floor"] = None
+
+                    frame_data = {
+                        "frame": frame_num,
+                        "processed_frame": processed_frame_count,
+                        "timestamp": timestamp,
+                        "person_id": person_id,
+                        "keypoints": keypoints_dict,
+                    }
+
+                    if jump_result:
+                        frame_data["jump_result"] = {
+                            "state": jump_result.get("state", "unknown"),
+                            "height": jump_result.get("height"),
+                            "position": jump_result.get("position"),
+                            "jump_type": jump_result.get("jump_type"),
+                            "jump_height": jump_result.get("jump_height"),
+                            "jump_distance": jump_result.get("jump_distance"),
+                        }
+
+                    person_all_frames_data[person_id].append(frame_data)
+
+                # 可視化フレームを生成（各人ごと）
+                if not args.no_video:
+                    # 統計情報を取得
+                    statistics = jump_detector_person.get_statistics()
+
+                    # 可視化フレームを生成（キーポイントとスケルトンのみ）
+                    vis_frame = visualizer.draw_frame(
+                        color_image, keypoints_2d, jump_result, statistics
+                    )
+
+                    # 各人ごとの動画ライターを初期化
+                    if person_id not in person_video_writers:
+                        person_video_path = output_dir / f"person_{person_id}" / "jump_visualization.mp4"
+                        person_video_path.parent.mkdir(parents=True, exist_ok=True)
+                        height, width = vis_frame.shape[:2]
+                        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+                        person_video_writer = cv2.VideoWriter(
+                            str(person_video_path), fourcc, video_fps, (width, height)
+                        )
+                        person_video_writers[person_id] = person_video_writer
+                        print(f"Initialized video writer for Person {person_id}: {person_video_path}")
+                    else:
+                        person_video_writer = person_video_writers[person_id]
+
+                    person_video_writer.write(vis_frame)
+                    
+                    # 全体の動画ライターも初期化（最初の人物のみ）
+                    if video_writer is None and person_id == tracked_persons_cam0[0][0]:
+                        video_path = output_dir / "jump_visualization.mp4"
+                        height, width = vis_frame.shape[:2]
+                        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+                        video_writer = cv2.VideoWriter(
+                            str(video_path), fourcc, video_fps, (width, height)
+                        )
+                        print(f"Initialized overall video writer: {video_path}")
+
+                    if video_writer is not None:
+                        video_writer.write(vis_frame)
+            
             depth_time = time.time() - depth_start
 
             # 最初の数フレームで時間を表示
@@ -1894,79 +2133,9 @@ Examples:
                 print(
                     f"Frame {processed_frame_count}: "
                     f"Pose={pose_time:.3f}s ({pose_time/total_time*100:.1f}%), "
-                    f"3D={depth_time:.3f}s ({depth_time/total_time*100:.1f}%)"
+                    f"3D={depth_time:.3f}s ({depth_time/total_time*100:.1f}%), "
+                    f"Persons={len(tracked_persons_cam0)}"
                 )
-
-            # ジャンプ検出
-            timestamp = color_frame.get_timestamp()
-            jump_result = jump_detector.update(
-                processed_frame_count, keypoints_3d, timestamp
-            )
-
-            # フレームデータを保存（minimal_dataモードではジャンプ検出時のみ）
-            should_save = not args.minimal_data or (
-                jump_result is not None
-                and jump_result.get("state") in ["jump_start", "jump_end", "jumping"]
-            )
-
-            if should_save:
-                # キーポイントの辞書を作成
-                keypoints_dict = convert_keypoints_to_dict(keypoints_2d, keypoints_3d)
-
-                # 床からの距離をすべてのキーポイントについて追加（床検出が有効な場合）
-                if floor_detector and floor_detector.floor_plane is not None:
-                    for kp_name, kp_data in keypoints_dict.items():
-                        if kp_data.get("3d") and kp_data["3d"]["x"] is not None:
-                            kp_coords = (
-                                kp_data["3d"]["x"],
-                                kp_data["3d"]["y"],
-                                kp_data["3d"]["z"],
-                            )
-                            distance = floor_detector.distance_to_floor(kp_coords)
-                            kp_data["distance_to_floor"] = distance
-                        else:
-                            kp_data["distance_to_floor"] = None
-
-                frame_data = {
-                    "frame": frame_num,
-                    "processed_frame": processed_frame_count,
-                    "timestamp": timestamp,
-                    "keypoints": keypoints_dict,
-                }
-
-                if jump_result:
-                    frame_data["jump_result"] = {
-                        "state": jump_result.get("state", "unknown"),
-                        "height": jump_result.get("height"),
-                        "position": jump_result.get("position"),
-                        "jump_type": jump_result.get("jump_type"),
-                        "jump_height": jump_result.get("jump_height"),
-                        "jump_distance": jump_result.get("jump_distance"),
-                    }
-
-                all_frames_data.append(frame_data)
-
-            # 可視化フレームを生成
-            if not args.no_video:
-                # 統計情報を取得
-                statistics = jump_detector.get_statistics()
-
-                # 可視化フレームを生成（キーポイントとスケルトンのみ）
-                vis_frame = visualizer.draw_frame(
-                    color_image, keypoints_2d, jump_result, statistics
-                )
-
-                # 動画ライターを初期化
-                if video_writer is None:
-                    video_path = output_dir / "jump_visualization.mp4"
-                    height, width = vis_frame.shape[:2]
-                    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-                    video_writer = cv2.VideoWriter(
-                        str(video_path), fourcc, video_fps, (width, height)
-                    )
-                    print(f"Initialized video writer: {video_path}")
-
-                video_writer.write(vis_frame)
 
             # 進捗表示
             current_time = time.time()
@@ -1992,85 +2161,91 @@ Examples:
         if processed_frame_count > 0:
             print(f"Average speed: {processed_frame_count/elapsed_time:.1f} fps")
 
-        # 統計情報を取得
-        statistics = jump_detector.get_statistics()
-        trajectory = jump_detector.get_trajectory()
+        if floor_detector and not floor_detection_done:
+            print(
+                "\n⚠ Warning: Floor plane could not be detected during playback. "
+                "Results fall back to traditional height-based measurements for this run."
+            )
 
+        # 各人ごとに結果を保存
         print("\n" + "=" * 60)
-        print("Analysis Results")
+        print(f"Multi-Person Analysis Results ({len(person_jump_detectors)} person(s) tracked)")
         print("=" * 60)
-        print(f"Total jumps detected: {statistics['total_jumps']}")
-        print(f"  - Vertical jumps: {statistics['vertical_jumps']}")
-        print(f"  - Horizontal jumps: {statistics['horizontal_jumps']}")
-        print(f"Max height: {statistics['max_height'] * 100:.1f} cm")
-        print(f"Max distance: {statistics['max_distance'] * 100:.1f} cm")
-        print(f"Average height: {statistics['avg_height'] * 100:.1f} cm")
-        print(f"Average distance: {statistics['avg_distance'] * 100:.1f} cm")
-        if statistics.get("max_air_time", 0) > 0:
-            print(
-                f"Max air time: {statistics['max_air_time'] * 1000:.1f} ms ({statistics['max_air_time']:.3f} s)"
-            )
-        if statistics.get("avg_air_time", 0) > 0:
-            print(
-                f"Average air time: {statistics.get('avg_air_time', 0) * 1000:.1f} ms ({statistics.get('avg_air_time', 0):.3f} s)"
-            )
-        print()
-
-        # 検出されたジャンプの詳細情報を表示
-        if statistics.get("jumps"):
-            print("=" * 60)
-            print("Detected Jump Details:")
-            print("=" * 60)
-            for i, jump in enumerate(statistics["jumps"], 1):
-                print(f"\nJump #{i}:")
-                print(f"  Type: {jump['jump_type']}")
-                print(f"  Height: {jump['height'] * 100:.1f} cm")
-                print(f"  Distance: {jump['distance'] * 100:.1f} cm")
-                if jump.get("air_time"):
-                    print(
-                        f"  Air time: {jump['air_time'] * 1000:.1f} ms ({jump['air_time']:.3f} s)"
-                    )
+        
+        for person_id in sorted(person_jump_detectors.keys()):
+            jump_detector_person = person_jump_detectors[person_id]
+            statistics = jump_detector_person.get_statistics()
+            trajectory = jump_detector_person.get_trajectory()
+            all_frames_data = person_all_frames_data.get(person_id, [])
+            
+            # 各人ごとの出力ディレクトリを作成
+            person_output_dir = output_dir / f"person_{person_id}"
+            person_output_dir.mkdir(parents=True, exist_ok=True)
+            
+            print(f"\n--- Person {person_id} ---")
+            print(f"Total jumps detected: {statistics['total_jumps']}")
+            print(f"  - Vertical jumps: {statistics['vertical_jumps']}")
+            print(f"  - Horizontal jumps: {statistics['horizontal_jumps']}")
+            print(f"Max height: {statistics['max_height'] * 100:.1f} cm")
+            print(f"Max distance: {statistics['max_distance'] * 100:.1f} cm")
+            print(f"Average height: {statistics['avg_height'] * 100:.1f} cm")
+            print(f"Average distance: {statistics['avg_distance'] * 100:.1f} cm")
+            if statistics.get("max_air_time", 0) > 0:
                 print(
-                    f"  Frames: {jump.get('frame_start', 'N/A')} → {jump.get('frame_takeoff', 'N/A')} → {jump.get('frame_end', 'N/A')}"
+                    f"Max air time: {statistics['max_air_time'] * 1000:.1f} ms ({statistics['max_air_time']:.3f} s)"
                 )
-                if jump.get("start_position") and jump.get("end_position"):
-                    start_pos = jump["start_position"]
-                    end_pos = jump["end_position"]
-                    if (
-                        start_pos
-                        and end_pos
-                        and len(start_pos) >= 2
-                        and len(end_pos) >= 2
-                    ):
-                        # XZ平面での距離を計算
-                        x_diff = end_pos[0] - start_pos[0]
-                        z_diff = (
-                            end_pos[2] - start_pos[2]
-                            if len(end_pos) > 2 and len(start_pos) > 2
-                            else 0
-                        )
-                        actual_distance = np.sqrt(x_diff**2 + z_diff**2) * 100
-                        print(
-                            f"  Start position: ({start_pos[0]:.3f}, {start_pos[1]:.3f}, {start_pos[2] if len(start_pos) > 2 else 'N/A'})"
-                        )
-                        print(
-                            f"  End position: ({end_pos[0]:.3f}, {end_pos[1]:.3f}, {end_pos[2] if len(end_pos) > 2 else 'N/A'})"
-                        )
-                        print(f"  Actual XZ distance: {actual_distance:.1f} cm")
-                print(f"  Reported distance: {jump['distance'] * 100:.1f} cm")
-            print("=" * 60)
-            print()
+            if statistics.get("avg_air_time", 0) > 0:
+                print(
+                    f"Average air time: {statistics.get('avg_air_time', 0) * 1000:.1f} ms ({statistics.get('avg_air_time', 0):.3f} s)"
+                )
 
-        # キーポイント変動性分析（床検出が有効な場合）
-        if floor_detector and not args.no_floor_detection:
-            print("=" * 60)
-            print("キーポイント変動性分析")
-            print("=" * 60)
+            # 検出されたジャンプの詳細情報を表示
+            if statistics.get("jumps"):
+                print(f"\n  Detected Jump Details (Person {person_id}):")
+                for i, jump in enumerate(statistics["jumps"], 1):
+                    print(f"    Jump #{i}:")
+                    print(f"      Type: {jump['jump_type']}")
+                    print(f"      Height: {jump['height'] * 100:.1f} cm")
+                    print(f"      Distance: {jump['distance'] * 100:.1f} cm")
+                    if jump.get("air_time"):
+                        print(
+                            f"      Air time: {jump['air_time'] * 1000:.1f} ms ({jump['air_time']:.3f} s)"
+                        )
+                    print(
+                        f"      Frames: {jump.get('frame_start', 'N/A')} → {jump.get('frame_takeoff', 'N/A')} → {jump.get('frame_end', 'N/A')}"
+                    )
+                    if jump.get("start_position") and jump.get("end_position"):
+                        start_pos = jump["start_position"]
+                        end_pos = jump["end_position"]
+                        if (
+                            start_pos
+                            and end_pos
+                            and len(start_pos) >= 2
+                            and len(end_pos) >= 2
+                        ):
+                            # XZ平面での距離を計算
+                            x_diff = end_pos[0] - start_pos[0]
+                            z_diff = (
+                                end_pos[2] - start_pos[2]
+                                if len(end_pos) > 2 and len(start_pos) > 2
+                                else 0
+                            )
+                            actual_distance = np.sqrt(x_diff**2 + z_diff**2) * 100
+                            print(
+                                f"      Start position: ({start_pos[0]:.3f}, {start_pos[1]:.3f}, {start_pos[2] if len(start_pos) > 2 else 'N/A'})"
+                            )
+                            print(
+                                f"      End position: ({end_pos[0]:.3f}, {end_pos[1]:.3f}, {end_pos[2] if len(end_pos) > 2 else 'N/A'})"
+                            )
+                            print(f"      Actual XZ distance: {actual_distance:.1f} cm")
+                    print(f"      Reported distance: {jump['distance'] * 100:.1f} cm")
 
-            # 最もジャンプ検出に敏感なキーポイントを特定
-            sensitive_keypoints = jump_detector.get_most_jump_sensitive_keypoints(
-                min_samples=10, top_n=10
-            )
+            # キーポイント変動性分析（床検出が有効な場合）
+            if floor_detector and not args.no_floor_detection:
+                # 最もジャンプ検出に敏感なキーポイントを特定
+                sensitive_keypoints = jump_detector_person.get_most_jump_sensitive_keypoints(
+                    min_samples=10, top_n=10
+                )
 
             if sensitive_keypoints:
                 print(
@@ -2112,7 +2287,7 @@ Examples:
                 # CSV出力
                 import csv
 
-                variability_csv_path = output_dir / "keypoint_variability.csv"
+                variability_csv_path = person_output_dir / "keypoint_variability.csv"
                 with open(variability_csv_path, "w", newline="", encoding="utf-8") as f:
                     writer = csv.writer(f)
                     writer.writerow(
@@ -2135,7 +2310,7 @@ Examples:
                             "Jump Sensitivity",
                         ]
                     )
-                    all_stats = jump_detector.analyze_keypoint_variability()
+                    all_stats = jump_detector_person.analyze_keypoint_variability()
                     for kp_name in sorted(all_stats.keys()):
                         stats = all_stats[kp_name]
                         writer.writerow(
@@ -2185,7 +2360,7 @@ Examples:
                 print("ジャンプ遷移分析（始まりと終わりを捉えるキーポイント）")
                 print("=" * 60)
 
-                transitions = jump_detector.analyze_jump_transitions()
+                transitions = jump_detector_person.analyze_jump_transitions()
 
                 if transitions["takeoff_keypoints"]:
                     print("\n【離陸（ジャンプ開始）時に急激に変化するキーポイント】:")
@@ -2217,51 +2392,83 @@ Examples:
 
                 print()
             else:
-                print("キーポイント変動性分析: 十分なデータがありません")
+                print("  キーポイント変動性分析: 十分なデータがありません")
             print()
 
-        # JSONファイルに保存
-        json_output = {"frames": all_frames_data, "statistics": statistics}
-        json_path = output_dir / "keypoints_3d.json"
-        save_json(json_output, str(json_path))
+            # JSONファイルに保存
+            json_output = {"frames": all_frames_data, "statistics": statistics}
+            json_path = person_output_dir / "keypoints_3d.json"
+            save_json(json_output, str(json_path))
 
-        # キーポイントのX, Y, Z座標時系列グラフを作成
-        plot_keypoint_coordinate_timeline(all_frames_data, output_dir, floor_detector)
+            # キーポイントのX, Y, Z座標時系列グラフを作成
+            plot_keypoint_coordinate_timeline(all_frames_data, person_output_dir, floor_detector)
 
-        # ジャンプ軌跡の可視化画像を作成
-        plot_jump_trajectory(trajectory, statistics, output_dir, floor_detector)
+            # ジャンプ軌跡の可視化画像を作成
+            plot_jump_trajectory(
+                trajectory,
+                statistics,
+                person_output_dir,
+                floor_detector,
+                baseline_height=args.waist_baseline_height,
+            )
 
-        # CSVファイルに保存
-        csv_path = output_dir / "jump_statistics.csv"
-        save_csv(statistics, trajectory, str(csv_path))
+            # CSVファイルに保存
+            csv_path = person_output_dir / "jump_statistics.csv"
+            save_csv(statistics, trajectory, str(csv_path))
 
-        # 可視化動画を完成
+            # 可視化動画を完成（各人ごと）
+            person_video_writer = person_video_writers.get(person_id)
+            if not args.no_video and person_video_writer is not None:
+                person_video_writer.release()
+                person_video_path = person_output_dir / "jump_visualization.mp4"
+                print(f"  Video saved to: {person_video_path}")
+
+            # 3Dキーポイントアニメーションを生成
+            if not args.no_3d_animation:
+                print(f"\n  Generating 3D keypoint animation for Person {person_id}...")
+                animation_path = person_output_dir / "keypoints_3d_animation.gif"
+                if args.interactive_3d:
+                    # インタラクティブモードで表示 + ファイルも保存
+                    if create_3d_keypoint_animation(
+                        str(json_path), str(animation_path), fps=30, interactive=True
+                    ):
+                        if Path(animation_path).exists():
+                            print(f"  3D keypoint animation saved to: {animation_path}")
+                    else:
+                        print("  Warning: Failed to create 3D keypoint animation")
+                else:
+                    # ファイルとして保存
+                    if create_3d_keypoint_animation(
+                        str(json_path), str(animation_path), fps=30, interactive=False
+                    ):
+                        print(f"  3D keypoint animation saved to: {animation_path}")
+                    else:
+                        print("  Warning: Failed to create 3D keypoint animation")
+            
+            print(f"  Results saved to: {person_output_dir}")
+        
+        # 可視化動画を完成（全体）
         if not args.no_video and video_writer is not None:
             video_writer.release()
-            print(f"Video saved to: {video_path}")
+            print(f"\nOverall video saved to: {video_path}")
 
-        # 3Dキーポイントアニメーションを生成
-        if not args.no_3d_animation:
-            print("\nGenerating 3D keypoint animation...")
-            animation_path = output_dir / "keypoints_3d_animation.gif"
-            if args.interactive_3d:
-                # インタラクティブモードで表示 + ファイルも保存
-                if create_3d_keypoint_animation(
-                    str(json_path), str(animation_path), fps=30, interactive=True
-                ):
-                    if Path(animation_path).exists():
-                        print(f"3D keypoint animation saved to: {animation_path}")
-                else:
-                    print("Warning: Failed to create 3D keypoint animation")
-            else:
-                # ファイルとして保存
-                if create_3d_keypoint_animation(
-                    str(json_path), str(animation_path), fps=30, interactive=False
-                ):
-                    print(f"3D keypoint animation saved to: {animation_path}")
-                else:
-                    print("Warning: Failed to create 3D keypoint animation")
-
+        # デバッグログを保存（NorFairトラッキング使用時）
+        if args.use_norfair_tracking and hasattr(person_tracker, 'save_debug_log'):
+            debug_log_path = Path(args.output) / "tracking_debug_log.json"
+            person_tracker.save_debug_log(str(debug_log_path))
+            print(f"\nTracking debug log saved to: {debug_log_path}")
+            
+            # デバッグ情報を表示
+            debug_info = person_tracker.get_debug_info()
+            print(f"\nTracking Debug Summary:")
+            print(f"  Active tracks: {debug_info['active_tracks']}")
+            print(f"  Track IDs: {debug_info['track_ids']}")
+            if debug_info['debug_log']:
+                print(f"  Debug log entries: {len(debug_info['debug_log'])}")
+                # 最後のエントリを表示
+                last_entry = debug_info['debug_log'][-1]
+                print(f"  Last frame: {last_entry['frame']}, Detections: {last_entry['num_detections']}, Tracks: {last_entry['num_tracks']}, Results: {last_entry['num_results']}")
+        
         print("\n" + "=" * 60)
         print("Analysis complete!")
         print(f"Results saved to: {args.output}")

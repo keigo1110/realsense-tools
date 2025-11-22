@@ -12,7 +12,18 @@ from collections import deque
 class JumpDetector:
     """ジャンプ検出・測定クラス"""
 
-    def __init__(self, threshold_vertical=0.05, threshold_horizontal=0.1, min_frames=10, floor_detector=None, use_floor_detection=True, min_jump_height=0.10, min_air_time=0.20):
+    def __init__(
+        self,
+        threshold_vertical=0.05,
+        threshold_horizontal=0.1,
+        min_frames=10,
+        floor_detector=None,
+        use_floor_detection=True,
+        min_jump_height=0.10,
+        min_air_time=0.20,
+        waist_baseline_height=None,
+        waist_zero_epsilon=0.01,
+    ):
         """
         Args:
             threshold_vertical: 垂直ジャンプ検出の閾値（メートル、床検出不使用時）
@@ -30,6 +41,8 @@ class JumpDetector:
         self.use_floor_detection = use_floor_detection and (floor_detector is not None)
         self.min_jump_height = min_jump_height  # 最小ジャンプ高さ（10cm）
         self.min_air_time = min_air_time  # 最小滞空時間（0.2秒 = 200ms）
+        self.waist_baseline_height = waist_baseline_height
+        self.waist_zero_epsilon = waist_zero_epsilon if waist_zero_epsilon is not None else 0.01
 
         # 履歴データ
         self.height_history = deque(maxlen=30)  # 過去30フレームの高さ
@@ -69,6 +82,9 @@ class JumpDetector:
 
         # 軌跡データ
         self.trajectory = []
+
+        # 腰基準によるゼロクロス検出用
+        self._prev_waist_delta = None
 
     def update(self, frame_num, keypoints_3d, timestamp=None):
         """
@@ -217,6 +233,16 @@ class JumpDetector:
             result = self._detect_jump(frame_num, x, y, z, timestamp)
 
         return result
+
+    def _delta_state(self, delta):
+        """基準点との差分が正か負か（デッドバンド考慮）を判定"""
+        if delta is None:
+            return "unknown"
+        if delta > self.waist_zero_epsilon:
+            return "positive"
+        if delta < -self.waist_zero_epsilon:
+            return "negative"
+        return "zero"
 
     def _detect_jump(self, frame_num, x, y, z, timestamp):
         """ジャンプ検出ロジック"""
@@ -382,6 +408,14 @@ class JumpDetector:
             mid_hip = (x, y, z)
             if mid_hip[0] is not None and mid_hip[1] is not None and mid_hip[2] is not None:
                 height_above_floor = self.floor_detector.distance_to_floor(mid_hip)
+
+        if (
+            self.waist_baseline_height is not None
+            and height_above_floor is not None
+        ):
+            return self._detect_jump_with_baseline(
+                frame_num, x, y, z, timestamp, height_above_floor
+            )
         
         # 床からの高さの履歴を保持（高さ変化検出のため）
         if not hasattr(self, 'height_above_floor_history'):
@@ -636,6 +670,154 @@ class JumpDetector:
             self.left_foot_on_floor.clear()
             self.right_foot_on_floor.clear()
         
+        return result
+
+    def _detect_jump_with_baseline(
+        self, frame_num, x, y, z, timestamp, height_above_floor
+    ):
+        """
+        腰の床距離と事前に与えられた基準値のゼロクロスでジャンプを検出
+        """
+        result = {
+            "frame": frame_num,
+            "timestamp": timestamp,
+            "height": z,
+            "position": (x, y, z),
+            "height_above_floor": height_above_floor,
+            "jump_type": None,
+            "jump_height": 0.0,
+            "jump_distance": 0.0,
+            "air_time": 0.0,
+            "state": "ground",
+        }
+
+        delta = height_above_floor - self.waist_baseline_height
+        prev_state = self._delta_state(self._prev_waist_delta)
+        current_state = self._delta_state(delta)
+        self._prev_waist_delta = delta
+
+        # 水平距離の更新用
+        def _update_horizontal_distance():
+            if self.jump_start_position:
+                distance = np.sqrt(
+                    (x - self.jump_start_position[0]) ** 2
+                    + (z - self.jump_start_position[2]) ** 2
+                )
+                if distance > self.jump_max_distance:
+                    self.jump_max_distance = distance
+
+        if self.jump_state == "ground":
+            if prev_state in ("negative", "zero") and current_state == "positive":
+                self.jump_state = "airborne"
+                self.jump_start_frame = frame_num
+                self.jump_start_timestamp = timestamp
+                self.jump_start_position = (x, y, z)
+                self.jump_takeoff_frame = frame_num
+                self.jump_takeoff_timestamp = timestamp
+                self.jump_takeoff_position = (x, y, z)
+                self.jump_takeoff_height = height_above_floor
+                self.jump_max_height = height_above_floor
+                self.jump_max_distance = 0.0
+                self._initial_state = False
+                result["state"] = "jump_start"
+            else:
+                result["state"] = "ground"
+            return result
+
+        if self.jump_state == "airborne":
+            if height_above_floor > self.jump_max_height:
+                self.jump_max_height = height_above_floor
+            _update_horizontal_distance()
+
+            if (
+                prev_state == "positive"
+                and current_state in ("negative", "zero")
+                and self.jump_takeoff_height is not None
+            ):
+                self.jump_end_frame = frame_num
+                self.jump_end_timestamp = timestamp
+                self.jump_end_position = (x, y, z)
+                jump_height = self.jump_max_height - self.jump_takeoff_height
+
+                air_time = 0.0
+                if (
+                    self.jump_takeoff_timestamp is not None
+                    and timestamp is not None
+                ):
+                    timestamp_diff = abs(timestamp - self.jump_takeoff_timestamp)
+                    if self.jump_takeoff_timestamp > 1000000000:
+                        air_time = timestamp_diff / 1000.0
+                    else:
+                        air_time = timestamp_diff
+                    if air_time > 10.0 and self.jump_takeoff_frame is not None:
+                        frame_diff = abs(frame_num - self.jump_takeoff_frame)
+                        air_time = frame_diff / 30.0
+
+                jump_distance = (
+                    self.jump_max_distance if self.jump_max_distance else 0.0
+                )
+                if jump_distance < self.threshold_horizontal:
+                    jump_type = "vertical"
+                    jump_distance_out = 0.0
+                else:
+                    jump_type = "horizontal"
+                    jump_distance_out = jump_distance
+
+                result["state"] = "jump_end"
+                result["jump_type"] = jump_type
+                result["jump_height"] = jump_height
+                result["jump_distance"] = jump_distance_out
+                result["air_time"] = air_time
+
+                is_valid_jump = (
+                    jump_height >= self.min_jump_height
+                    and air_time >= self.min_air_time
+                )
+
+                if is_valid_jump:
+                    jump_data = {
+                        "frame_start": self.jump_start_frame,
+                        "frame_takeoff": self.jump_takeoff_frame,
+                        "frame_end": self.jump_end_frame,
+                        "timestamp_start": self.jump_start_timestamp,
+                        "timestamp_takeoff": self.jump_takeoff_timestamp,
+                        "timestamp_end": self.jump_end_timestamp,
+                        "jump_type": jump_type,
+                        "height": jump_height,
+                        "distance": jump_distance_out,
+                        "air_time": air_time,
+                        "max_height": self.jump_max_height,
+                        "start_position": self.jump_start_position,
+                        "takeoff_position": self.jump_takeoff_position,
+                        "end_position": self.jump_end_position,
+                    }
+                    self.detected_jumps.append(jump_data)
+
+                # リセット
+                self.jump_state = "ground"
+                self.jump_start_frame = None
+                self.jump_start_timestamp = None
+                self.jump_start_position = None
+                self.jump_takeoff_frame = None
+                self.jump_takeoff_timestamp = None
+                self.jump_takeoff_position = None
+                self.jump_end_frame = None
+                self.jump_end_timestamp = None
+                self.jump_end_position = None
+                self.jump_takeoff_height = None
+                self.jump_max_height = 0.0
+                self.jump_max_distance = 0.0
+                return result
+
+            # まだ空中
+            result["state"] = "jumping"
+            if self.jump_takeoff_height is not None:
+                result["jump_height"] = self.jump_max_height - self.jump_takeoff_height
+            result["jump_distance"] = self.jump_max_distance
+            return result
+
+        # フォールバック
+        result["state"] = "ground"
         return result
 
     def get_statistics(self):

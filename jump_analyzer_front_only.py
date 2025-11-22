@@ -61,6 +61,7 @@ except:
 
 from src.realsense_utils import BagFileReader, CUPY_AVAILABLE
 from src.yolov8_pose_3d import YOLOv8PoseDetector, COCO_KEYPOINTS
+from src.vitpose_3d import ViTPoseDetector
 from src.jump_detector import JumpDetector
 from src.visualizer import JumpVisualizer, create_3d_keypoint_animation
 from src.keypoint_smoother import KeypointSmoother
@@ -1043,6 +1044,7 @@ def merge_config_with_args(config, args):
         "input": "input",
         "output": "output",
         "model_dir": "model_dir",
+        "pose_model": "pose_model",
         "model_name": "model_name",
         "threshold_vertical": "threshold_vertical",
         "threshold_horizontal": "threshold_horizontal",
@@ -1171,10 +1173,17 @@ Examples:
         help="Directory for YOLOv8-Pose model files (default: models)",
     )
     parser.add_argument(
+        "--pose-model",
+        type=str,
+        default="yolov8",
+        choices=["yolov8", "vitpose"],
+        help="Pose estimation model type: 'yolov8' (fast) or 'vitpose' (highest accuracy) (default: yolov8)",
+    )
+    parser.add_argument(
         "--model-name",
         type=str,
         default="yolov8x-pose.pt",
-        help="YOLOv8-Pose model name (yolov8n-pose.pt, yolov8s-pose.pt, etc.) (default: yolov8x-pose.pt)",
+        help="Model name: for YOLOv8 (yolov8n-pose.pt, yolov8s-pose.pt, etc.) or for ViTPose (vitpose-huge, vitpose-large, etc.) (default: yolov8x-pose.pt)",
     )
     parser.add_argument(
         "--threshold-vertical",
@@ -1388,23 +1397,33 @@ Examples:
             print(f"Error: Input file not found: {args.input}", file=sys.stderr)
             sys.exit(1)
 
+    pose_model_type = args.pose_model.lower()
     print("=" * 60)
-    print("Jump Analyzer - YOLOv8-Pose 3D Analysis")
+    print(f"Jump Analyzer - {pose_model_type.upper()} 3D Analysis")
     print("=" * 60)
     print(f"Input file: {bag_file_path}")
     print(f"Output directory: {args.output}")
+    print(f"Pose model: {pose_model_type}")
     print()
 
     # モデルディレクトリを作成（存在しない場合）
     model_dir = Path(args.model_dir)
     model_dir.mkdir(parents=True, exist_ok=True)
 
-    # YOLOv8-Poseモデルの読み込み
-    print("Loading YOLOv8-Pose model...")
-    yolo_pose = YOLOv8PoseDetector(model_name=args.model_name, model_dir=str(model_dir))
-    if not yolo_pose.load_model():
-        print("Error: Failed to load YOLOv8-Pose model", file=sys.stderr)
-        sys.exit(1)
+    # 姿勢推定モデルの読み込み
+    pose_detector = None
+    if pose_model_type == "vitpose":
+        print(f"Loading ViTPose model ({args.model_name})...")
+        pose_detector = ViTPoseDetector(model_name=args.model_name, model_dir=str(model_dir))
+        if not pose_detector.load_model():
+            print("Error: Failed to load ViTPose model", file=sys.stderr)
+            sys.exit(1)
+    else:  # yolov8 (default)
+        print(f"Loading YOLOv8-Pose model ({args.model_name})...")
+        pose_detector = YOLOv8PoseDetector(model_name=args.model_name, model_dir=str(model_dir))
+        if not pose_detector.load_model():
+            print("Error: Failed to load YOLOv8-Pose model", file=sys.stderr)
+            sys.exit(1)
 
     # バグファイルの読み込み
     bag_reader = None
@@ -1775,14 +1794,14 @@ Examples:
             pose_start = time.time()
             
             # cam0のキーポイント検出（複数人→最近傍人物を選択）
-            persons_cam0 = yolo_pose.detect_keypoints_multi(inference_image, max_det=5, conf=0.20)
+            persons_cam0 = pose_detector.detect_keypoints_multi(inference_image, max_det=5, conf=0.20)
             keypoints_2d_cam0 = None
             if persons_cam0:
                 # 深度から最近傍人物を選択
                 keypoints_2d_cam0 = pick_nearest_person_by_depth(persons_cam0, depth_frame, bag_reader, color_image.shape)
             else:
                 # フォールバック（旧API）
-                keypoints_2d_cam0 = yolo_pose.detect_keypoints(inference_image)
+                keypoints_2d_cam0 = pose_detector.detect_keypoints(inference_image)
             pose_time_cam0 = time.time() - pose_start
             
             # デュアルモード: cam1のキーポイント検出
@@ -1806,11 +1825,11 @@ Examples:
                         resize_scale_y1 = color_image1.shape[0] / new_height1
                     
                     pose_start_cam1 = time.time()
-                    persons_cam1 = yolo_pose.detect_keypoints_multi(inference_image1, max_det=5, conf=0.20)
+                    persons_cam1 = pose_detector.detect_keypoints_multi(inference_image1, max_det=5, conf=0.20)
                     if persons_cam1:
                         keypoints_2d_cam1 = pick_nearest_person_by_depth(persons_cam1, depth_frame1, bag_reader_cam1, color_image1.shape)
                     else:
-                        keypoints_2d_cam1 = yolo_pose.detect_keypoints(inference_image1)
+                        keypoints_2d_cam1 = pose_detector.detect_keypoints(inference_image1)
                     pose_time_cam1 = time.time() - pose_start_cam1
                     
                     # keypoints座標を元の画像サイズにスケール

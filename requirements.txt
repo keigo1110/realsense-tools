@@ -9,6 +9,12 @@ toml  # 設定ファイル読み込み用
 # インストール: pip install ultralytics
 ultralytics>=8.0.0
 
+# ViTPose用（オプション、最高精度のキーポイント推定）
+# インストール: pip install openmim
+# その後: mim install mmengine mmcv mmdet mmpose
+# 注意: mmposeのインストールには時間がかかる場合があります
+# ViTPoseを使用しない場合は、このセクションをスキップできます
+
 # Open3D: 2台のカメラの自動キャリブレーション用
 # ターゲットレス自動外部標定（FPFH特徴量 + RANSAC + ICP）に使用
 open3d>=0.18.0
@@ -24,3 +30,7 @@ open3d>=0.18.0
 # macOS: pyrealsense2-macosx または pyrealsense2-mac
 # Linux/Windows: pyrealsense2 (公式パッケージ)
 # 詳細はREADME.mdの「エラーが発生した場合」セクションを参照してください
+
+# NorFair: 高精度な人物トラッキング用（オプション）
+# より堅牢なトラッキングが必要な場合: pip install norfair
+# 使用する場合: --use-norfair-tracking フラグを追加

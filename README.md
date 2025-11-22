@@ -1,7 +1,9 @@
 # RealSense 録画・分析ツール
 
-RealSense カメラから映像と深度データを`.bag`ファイルに録画し、YOLOv8-Pose を使用した 3D 姿勢推定によるジャンプ分析を行う Python ツールです。
-YOLOv8-Pose は高速（CPU: 10-30fps, GPU: 100-200fps+）で、実用的な精度を実現します。
+RealSense カメラから映像と深度データを`.bag`ファイルに録画し、YOLOv8-Pose または ViTPose を使用した 3D 姿勢推定によるジャンプ分析を行う Python ツールです。
+
+- **YOLOv8-Pose**: 高速（CPU: 10-30fps, GPU: 100-200fps+）で実用的な精度を実現
+- **ViTPose**: 最高精度のキーポイント推定（CPU: 5-15fps, GPU: 30-60fps）
 
 ## 目次
 
@@ -39,7 +41,9 @@ pip install pyrealsense2
 
 **注意**: macOS では`pyrealsense2-macosx`を使用してください。公式の`pyrealsense2`は macOS ARM64 に対応していません。
 
-### 2. YOLOv8-Pose のインストール
+### 2. 姿勢推定モデルのインストール
+
+#### YOLOv8-Pose（デフォルト、高速）
 
 ```bash
 # ultralyticsをインストール（YOLOv8-Pose含む）
@@ -53,6 +57,44 @@ pip install ultralytics
 ```bash
 python -c "from ultralytics import YOLO; print('YOLOv8-Poseインストール成功')"
 ```
+
+#### ViTPose（オプション、最高精度）
+
+ViTPoseは最高精度のキーポイント推定を実現しますが、YOLOv8-Poseよりも推論速度が遅くなります。
+
+```bash
+# openmimをインストール
+pip install openmim
+
+# mmposeとその依存関係をインストール（時間がかかる場合があります）
+mim install mmengine mmcv mmdet mmpose
+```
+
+**動作確認:**
+
+```bash
+python -c "from mmpose.apis import MMPoseInferencer; print('ViTPoseインストール成功')"
+```
+
+**注意:** ViTPoseを使用しない場合は、このセクションをスキップできます。デフォルトのYOLOv8-Poseでも十分な精度が得られます。
+
+#### NorFairトラッキング（オプション、より堅牢な人物トラッキング）
+
+複数人のトラッキングが不安定な場合（一瞬の検出漏れで別人として認識されるなど）、NorFairライブラリを使用することでより堅牢なトラッキングが可能です。
+
+```bash
+# NorFairをインストール
+pip install norfair
+```
+
+**使用方法:**
+
+```bash
+# --use-norfair-tracking フラグを追加
+python jump_analyzer.py --input bagdata/my_recording.bag --output results/ --use-norfair-tracking
+```
+
+**注意:** NorFairを使用しない場合、カスタム実装のトラッキング（IoU + キーポイントベース）が使用されます。通常はカスタム実装で十分ですが、より堅牢なトラッキングが必要な場合はNorFairを推奨します。
 
 ### 3. CUDA 高速化（オプション）
 
@@ -264,6 +306,13 @@ kalman_measurement_noise = 0.1
 # 床検出
 enable_floor_detection = true  # 床検出を有効化（true: 床検出を使用、false: 従来の高さベース検出を使用）
 
+# 腰基準ジャンプ検出
+waist_baseline_height = 0.85  # 床から腰までの基準高さ（m）
+waist_zero_epsilon = 0.01     # 基準付近のデッドバンド（m）
+
+# 人物トラッキング（複数人対応）
+use_norfair_tracking = false  # NorFairトラッキングを使用（true: NorFair、false: カスタム実装）
+
 # 再生時間範囲（秒、0の場合は最初から/最後まで）
 start_time = 5.0
 end_time = 13.0
@@ -307,7 +356,9 @@ python jump_analyzer.py --input bagdata/my_recording.bag --output results/ \
   --threshold-horizontal 0.2
 ```
 
-### YOLOv8-Pose モデルの選択
+### 姿勢推定モデルの選択
+
+#### YOLOv8-Pose（デフォルト、高速）
 
 **モデルの種類:**
 
@@ -320,11 +371,11 @@ python jump_analyzer.py --input bagdata/my_recording.bag --output results/ \
 ```bash
 # より高速なモデルを使用する場合
 python jump_analyzer.py --input bagdata/my_recording.bag --output results/ \
-  --model-name yolov8n-pose.pt
+  --pose-model yolov8 --model-name yolov8n-pose.pt
 
 # 最高精度モデルを明示的に指定
 python jump_analyzer.py --input bagdata/my_recording.bag --output results/ \
-  --model-name yolov8x-pose.pt
+  --pose-model yolov8 --model-name yolov8x-pose.pt
 ```
 
 **処理速度について:**
@@ -332,6 +383,40 @@ python jump_analyzer.py --input bagdata/my_recording.bag --output results/ \
 - CPU 環境: 約 10-30fps（モデルサイズによる）
 - GPU 環境: 70-200fps+（GPU 性能とモデルサイズによる）
 - CUDA 環境では最高精度モデル（yolov8x-pose.pt）でも十分な速度が得られます
+
+#### ViTPose（オプション、最高精度）
+
+ViTPoseは最高精度のキーポイント推定を実現します。特に複雑なポーズやオクルージョン（遮蔽）に対して優れた性能を発揮します。
+
+**モデルの種類:**
+
+- `vitpose-tiny`: 最小モデル（高速、やや精度低下）
+- `vitpose-small`: 小型モデル（高速、バランス型）
+- `vitpose-base`: ベースモデル（中速、高精度）
+- `vitpose-large`: 大型モデル（やや低速、高精度）
+- `vitpose-huge`: 最大モデル（最高精度）- **推奨**
+
+```bash
+# ViTPoseを使用（最高精度）
+python jump_analyzer.py --input bagdata/my_recording.bag --output results/ \
+  --pose-model vitpose --model-name vitpose-huge
+
+# より高速なViTPoseモデルを使用
+python jump_analyzer.py --input bagdata/my_recording.bag --output results/ \
+  --pose-model vitpose --model-name vitpose-base
+```
+
+**処理速度について:**
+
+- CPU 環境: 約 5-15fps（モデルサイズによる）
+- GPU 環境: 約 30-60fps（GPU 性能とモデルサイズによる）
+- YOLOv8-Poseと比較して推論速度は遅くなりますが、精度は向上します
+
+**推奨用途:**
+
+- 研究用途で最高精度が必要な場合
+- 複雑なポーズやオクルージョンが多い場合
+- 小さい人物でも高精度が必要な場合
 
 ### 高速化オプション（処理が遅い場合）
 
@@ -370,8 +455,9 @@ python jump_analyzer.py --help
 
 - `--input`: 入力.bag ファイルのパス（必須）
 - `--output`: 出力ディレクトリ（必須）
+- `--pose-model`: 姿勢推定モデルタイプ（`yolov8` または `vitpose`、デフォルト: `yolov8`）
 - `--model-dir`: モデルディレクトリ（デフォルト: `models/`）
-- `--model-name`: 使用する YOLOv8-Pose モデル（デフォルト: `yolov8x-pose.pt`）
+- `--model-name`: 使用するモデル名（YOLOv8: `yolov8x-pose.pt` など、ViTPose: `vitpose-huge` など、デフォルト: `yolov8x-pose.pt`）
 - `--threshold-vertical`: 垂直ジャンプ検出閾値（メートル、デフォルト: 0.05）
 - `--threshold-horizontal`: 水平ジャンプ検出閾値（メートル、デフォルト: 0.1）
 - `--interactive-3d`: インタラクティブ 3D アニメーションを表示
@@ -384,6 +470,8 @@ python jump_analyzer.py --help
 - `--frame-skip N`: N フレームおきに処理（デフォルト: 1）
 - `--resize-factor F`: 画像リサイズ率（0.0-1.0、デフォルト: 1.0）
 - `--minimal-data`: ジャンプ検出時のみデータを保存
+- `--waist-baseline-height`: 床から腰までの基準値（メートル）。指定すると腰基準のゼロクロスでジャンプを検出
+- `--waist-zero-epsilon`: 基準値付近のデッドバンド（メートル、デフォルト: 0.01）
 
 ## 分析結果の見方
 

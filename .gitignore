@@ -28,5 +28,7 @@ dist
 
 # folder
 bagdata/
-models/
+models/*
+!models/vitpose_configs/
+!models/vitpose_configs/**
 results/
