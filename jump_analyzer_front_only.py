@@ -1200,8 +1200,8 @@ Examples:
     parser.add_argument(
         "--min-jump-height",
         type=float,
-        default=0.10,
-        help="Minimum jump height in meters to be considered a valid jump (default: 0.10m = 10cm)",
+        default=0.20,
+        help="Minimum jump height in meters to be considered a valid jump (default: 0.20m = 20cm, jumps below 20cm are excluded)",
     )
     parser.add_argument(
         "--min-air-time",
@@ -1422,8 +1422,8 @@ Examples:
         print(f"Loading YOLOv8-Pose model ({args.model_name})...")
         pose_detector = YOLOv8PoseDetector(model_name=args.model_name, model_dir=str(model_dir))
         if not pose_detector.load_model():
-            print("Error: Failed to load YOLOv8-Pose model", file=sys.stderr)
-            sys.exit(1)
+        print("Error: Failed to load YOLOv8-Pose model", file=sys.stderr)
+        sys.exit(1)
 
     # バグファイルの読み込み
     bag_reader = None

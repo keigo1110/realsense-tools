@@ -15,7 +15,7 @@ model_name = "yolov8x-pose.pt"  # モデル名: YOLOv8の場合 (yolov8n-pose.pt
 # ジャンプ検出閾値
 threshold_vertical = 0.05  # 垂直ジャンプ検出閾値（メートル）
 threshold_horizontal = 0.1  # 水平ジャンプ検出閾値（メートル）
-min_jump_height = 0.10  # 有効なジャンプと認識する最小高さ（メートル、デフォルト: 10cm）
+min_jump_height = 0.20  # 有効なジャンプと認識する最小高さ（メートル、デフォルト: 20cm、20cm以下は除外）
 min_air_time = 0.20  # 有効なジャンプと認識する最小滞空時間（秒、デフォルト: 200ms）
 
 # 出力オプション
@@ -25,16 +25,16 @@ interactive_3d = true  # インタラクティブ3Dアニメーションを表�
 
 # キーポイントスムージング
 smooth_keypoints = true  # キーポイントスムージングを有効化（falseの場合は無効、trueの場合はsmooth_window_sizeを使用）
-smooth_window_size = 5  # 移動平均のウィンドウサイズ（smooth_keypoints: trueの場合に使用）
+smooth_window_size = 10  # 移動平均のウィンドウサイズ（smooth_keypoints: trueの場合に使用、振動を減らすため10に増加）
 
 # 深度データ処理
 enable_depth_interpolation = true  # 深度補間を有効化（true: 補間する、false: 単一ピクセルを使用）
-depth_kernel_size = 3  # 深度補間カーネルサイズ（3, 5, 7など）
+depth_kernel_size = 5  # 深度補間カーネルサイズ（3, 5, 7など、振動を減らすため5に増加）
 
-# カルマンフィルタ（高度なスムージング）
+# カルマンフィルタ（高度なスムージング、推奨）
 use_kalman_filter = true  # カルマンフィルタを使用（smooth_keypointsより高精度だが遅い）
-kalman_process_noise = 0.03  # カルマンフィルタ処理ノイズ（小さいほど滑らか、大きいほど反応が速い）
-kalman_measurement_noise = 0.1  # カルマンフィルタ測定ノイズ（大きいほど予測を信頼）
+kalman_process_noise = 0.005  # カルマンフィルタ処理ノイズ（小さいほど滑らか、振動を減らすため0.005に減少）
+kalman_measurement_noise = 0.15  # カルマンフィルタ測定ノイズ（大きいほど予測を信頼、振動を減らすため0.15に増加）
 
 # 床検出（高精度なジャンプ検出）
 enable_floor_detection = true  # 床検出を有効化（true: 床検出を使用、false: 従来の高さベース検出を使用）
